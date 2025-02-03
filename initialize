@@ -274,6 +274,9 @@ def visuallize(s, e, delta_p):
     s_x, s_y = s["Radius"] * np.cos(np.pi/2 - s["Heading"]), s["Radius"] * np.sin(np.pi/2 - s["Heading"])
     e_x, e_y = e["Radius"] * np.cos(np.pi/2 - e["Heading"]), e["Radius"] * np.sin(np.pi/2 - e["Heading"])
     
+    m_idx = len(delta_p["height"]) // 2
+    m_x, m_y, m_z = x[m_idx], y[m_idx], z[m_idx]
+    
     fig = plt.figure(figsize=(18, 9))
     ax = fig.add_subplot(121, projection='3d')
     ax.scatter(x, y, z, label='Path')
@@ -284,7 +287,10 @@ def visuallize(s, e, delta_p):
     ax.scatter(e_x, e_y,
             e["Height"],
             color='blue', s=100, label='End Point')
-
+    ax.scatter(m_x, m_y,
+            m_z,
+            color='green', s=100, label='Middle Point')
+    
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Height')
@@ -296,6 +302,7 @@ def visuallize(s, e, delta_p):
     az.scatter(x, y, label='Path', s = 25)
     az.scatter(s_x, s_y, color='red', s=100, label='Start Point')
     az.scatter(e_x, e_y, color='blue', s=100, label='End Point')
+    az.scatter(m_x, m_y, color='green', s=100, label='Middle Point')
     az.set_title('Cylindrical Coordinate 2D (North = Heading 0)')
     az.set_xlabel('East-West (X)')
     az.set_ylabel('North-South (Y)')
