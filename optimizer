@@ -1,0 +1,28 @@
+
+class optimizer():
+    def __init__(self, s, e, delta, epsilon = 1e-4, max_iter = 100):
+        # DV 설정하기
+        self.DV = np.vstack([delta["heading"], delta["Slope"], delta["speed"]])
+        self.s = s
+        self.e = e
+        self.m = len(delta["heading"]) * 6
+        self.mu = 10 * np.ones(self.m)
+        self.epsilon = epsilon
+        self.max_iter = max_iter
+        
+    def cost_cal(self):
+        pass
+    
+    
+    def compute_residuals(self):
+        pass
+    
+    def compute_step(self):
+        pass
+    
+    def optimize(self):
+        pass
+    
+    
+    
+    pass
