@@ -1,0 +1,320 @@
+from pyproj import Geod
+
+# 이미 calibration 된 데이터에서 initailize한 한부분을 df로 받음
+def initialize(df, linear_slope=True, reverse = False):
+
+    df["TimeStamp"] = pd.to_datetime(df["datetime"], format="%Y-%m-%d %H:%M:%S")
+    df["UnixTime"] = df["TimeStamp"].apply(lambda x: x.timestamp())
+
+    data = np.array([tuple(x) for x in np.vstack( \
+                (df['UnixTime'], \
+                    df['numSV'], \
+                    df['height'], \
+                    df['Speed'], \
+                    df['AccelX'], \
+                    df['AccelY'], \
+                    df['AccelZ'], \
+                    df['AngleRateX'], \
+                    df['AngleRateY'], \
+                    df['AngleRateZ'], \
+                    df["headMot"], \
+                    df["lat"], \
+                    df["lon"],
+                    )).T], \
+
+                dtype = [('TimeStamp', None), \
+                        ('numSV', None), \
+                        ('Height', None), \
+                        ('Speed', None), \
+                        ('AccelX', None), \
+                        ('AccelY', None), \
+                        ('AccelZ', None), \
+                        ('AngleRateX', None), \
+                        ('AngleRateY', None), \
+                        ('AngleRateZ', None), \
+                        ('Heading', None),  \
+                        ('Lat', None), \
+                        ('Lon', None),
+                        ])
+
+    # 변화량은 소문자로 표기, 합친 값은 대문자로 표기기
+    delta_p = {
+        "heading": np.zeros(len(data)),
+        "Slope" :  np.zeros(len(data)),
+        "speed" :  np.zeros(len(data)),
+        "height" :  np.zeros(len(data)),
+        "radius" :  np.zeros(len(data)),
+    }
+
+    # 원통형 좌표계로 start_point, end_point 변환
+
+    geod = Geod(ellps="WGS84")
+
+    time_delta = np.diff(data["TimeStamp"])
+    time_delta = np.insert(time_delta, 0, time_delta[0])
+
+    dt = data.dtype.descr.copy()
+    dt.append(('Slope', '<f8'))
+    dt.append(('Radius', '<f8'))
+    dt.append(('Theta', '<f8'))
+
+    start_point = data[0].copy()
+    end_point = data[-1].copy()
+
+    start_point = np.zeros(1, dtype=dt)[0]
+    end_point = np.zeros(1, dtype=dt)[0]
+
+    for name in data.dtype.names:
+        start_point[name] = data[name][0]
+        end_point[name] = data[name][-1]
+
+    start_point["Slope"] = np.arctan2((data["Height"][1] - data["Height"][0]), (data["Speed"][0] * time_delta[0]))
+    end_point["Slope"] = np.arctan2((data["Height"][-1] - data["Height"][-2]), (data["Speed"][-1] * time_delta[-1]))
+
+    azimuth, _, distance = geod.inv(start_point["Lon"], start_point["Lat"], end_point["Lon"], end_point["Lat"])
+
+    start_point["Radius"] = 0
+    end_point["Radius"] = distance
+    start_point["Theta"] = 0
+    end_point["Theta"] =  end_point["Heading"] - start_point["Heading"]
+
+    # initialize 하기 전에 각속도는 일단 MA 쳐야함. 마지막의 None 값은 data의 값 그대로 사용
+    window_size_yaw = 1
+    window_size_pitch = 10
+
+    def ma_concat(data, ma, window_size):
+        data_MA = np.full(len(data), np.nan)
+
+        # 시작과 끝 부분 처리
+        data_MA[-(window_size):] = data[-(window_size):] / window_size
+        data_MA[:-(window_size)] = ma[:-(window_size)]
+
+        return data_MA
+    # Heading diff = - Yaw Rate, window 1로 그대로 사용
+    Yaw_MA = -np.roll(df["AngleRateZ"].rolling(window_size_yaw).mean(), -window_size_yaw).copy()
+    # Slope ~ Pitch Rate
+    Pitch_MA = np.roll(df["AngleRateY"].rolling(window_size_pitch).mean(), -window_size_pitch).copy() / window_size_pitch
+
+    Yaw_MA = ma_concat(data["AngleRateZ"], Yaw_MA, window_size_yaw)
+    Pitch_MA = ma_concat(data["AngleRateY"], Pitch_MA, window_size_pitch)
+    Accx_MA = data["AccelX"].copy()
+
+    if reverse:
+        start_point, end_point = end_point.copy(), start_point.copy()
+        
+        # radius 축을 North로 잡으면 theta 둘 필요 없음. 사용하고 있지 않기도 함.
+        start_point["Radius"] = 0
+        end_point["Radius"] = distance
+        start_point["Theta"] = 0
+        end_point["Theta"] =  - (end_point["Heading"] - start_point["Heading"])
+
+        for point in [start_point, end_point]:
+            point["Heading"] = point["Heading"] + np.pi
+            point["Slope"] = - point["Slope"]
+            point["Theta"] = - point["Theta"]
+
+        Yaw_MA = np.flip(Yaw_MA)
+        Pitch_MA = np.flip(Pitch_MA)
+        Accx_MA = np.flip(Accx_MA)
+        time_delta = np.flip(time_delta)
+
+    def init_heading(heading_array, Yaw_MA, time_delta):
+        heading_array[:] = Yaw_MA/100 * time_delta
+        if reverse:
+            heading_array[:] = - Yaw_MA/100 * time_delta
+        return heading_array
+
+    def init_slope(slope_array, Pitch_MA, time_delta):
+        """
+        pitch rate로는 slope 를 파악하기 어려워 해당 함수 사용안함
+        """
+        slope_array[:] = Pitch_MA #* time_delta
+        if reverse:
+            slope_array[:] = - Pitch_MA #* time_delta
+        slope_array = np.diff(slope_array)
+        slope_array = np.insert(slope_array, 0, 0)
+
+        return slope_array
+
+    def init_speed(start_point, speed_array, Accx_MA, slope_array, time_delta):
+        Slope_array = slope_array #start_point["Slope"] + np.cumsum(slope_array)
+        if not reverse:
+            speed_array[:] = (Accx_MA - 9.814 * np.sin(Slope_array)) * np.cos(Slope_array) * time_delta
+        else :
+            speed_array[:] = - (Accx_MA - 9.814 * np.sin(-Slope_array)) * np.cos(-Slope_array) * time_delta
+        return speed_array
+
+    def init_height(start_point, height_array, speed_array, slope_array, time_delta):
+
+        Slope_array = slope_array #start_point["Slope"] + np.cumsum(slope_array)
+        Speed_array = start_point["Speed"] + np.cumsum(speed_array)
+        height_array[:] = Speed_array * np.tan(Slope_array) * np.abs(time_delta)
+
+        return height_array
+
+    def init_radius(start_point, radius_array, speed_array, heading_array, time_delta):
+        if not reverse:
+            Speed_array = start_point["Speed"] + np.cumsum(speed_array)
+        else:
+            Speed_array = start_point["Speed"] + np.cumsum(speed_array)
+
+        radius_array[:] = Speed_array * np.cos(heading_array) * time_delta
+        return radius_array
+
+    def now_value(array, idx):
+        sum_array = array.cumsum()
+        return sum_array[idx]
+
+    delta_p["heading"] = init_heading(delta_p["heading"], Yaw_MA, time_delta)
+
+     # 단순 끝점 간 고도 차로 linear 하게 초기 slope 생성, delta slope는 전부 0으로 초기화. slope_s를 해당 slope 값으로 설정
+    if linear_slope == True:
+        delta_p["Slope"] = np.arctan2(end_point["Height"] - start_point["Height"], start_point["Speed"] * np.sum(time_delta))*np.ones(len(data))
+    else:
+        delta_p["Slope"] = np.arctan2(end_point["Height"] - start_point["Height"], start_point["Speed"] * np.sum(time_delta))*np.ones(len(data))
+    delta_p["speed"] = init_speed(start_point, delta_p["speed"], Accx_MA, delta_p["Slope"], time_delta)
+    delta_p["height"] = init_height(start_point, delta_p["height"], delta_p["speed"], delta_p["Slope"], time_delta)
+    delta_p["radius"] = init_radius(start_point, delta_p["radius"], delta_p["speed"], delta_p["heading"], time_delta)
+
+
+    return start_point, end_point, delta_p
+
+def bi_direction(s, e, delta_s, delta_e):
+    # 양방향으로 초기 값 생성하고, 내분해서 최종 초기화
+    path_s = {}
+    path_e = {}
+    path_bi = {}
+    
+    delta_e_s = {}
+    delta_bi = {}
+    
+    N_ = len(delta_s["heading"])
+    t_values = np.linspace(0, 1, N_)
+    
+    e_e = e.copy()
+    e_e["Radius"] = 0.0
+    e_e["Heading"] = e["Heading"] + np.pi
+    
+    for col, delta_col in zip(["Height", "Speed", "Heading", "Radius"],
+                ["height", "speed", "heading", "radius"]):
+        path_s[col] = s[col] + np.cumsum(delta_s[delta_col])
+        path_e[col] = (e_e[col] + np.cumsum(delta_e[delta_col]))[::-1]
+    
+    path_s["Slope"] = delta_s["Slope"]
+    path_e["Slope"] = - delta_e["Slope"]
+    
+    r_ = path_e["Radius"]
+    alpha = -(e["Heading"] - s["Heading"]) + np.pi
+    
+    x = r_ * np.sin(path_e["Heading"])
+    y = r_ * np.cos(path_e["Heading"])
+
+    dx = e["Radius"] * np.sin(s["Heading"] + np.pi)
+    dy = e["Radius"] * np.cos(s["Heading"] + np.pi)
+
+    x_shifted = x - dx
+    y_shifted = y - dy
+    x_new = np.cos(alpha) * x_shifted - np.sin(alpha) * y_shifted
+    y_new = np.sin(alpha) * x_shifted + np.cos(alpha) * y_shifted
+    
+    x_new, y_new = -y_new, -x_new
+
+    radius_new = np.sqrt(x_new**2 + y_new**2)
+    heading_cylindrical =  np.arctan2(y_new, x_new)
+    
+    path_e_s = path_e.copy()
+    path_e_s["Heading"] = heading_cylindrical % (2*np.pi)
+    path_e_s["Radius"] = radius_new
+    
+    for col, delta_col in zip(["Height", "Speed", "Heading", "Slope", "Radius"],
+                ["height", "speed", "heading", "Slope", "radius"]):
+        if col != "Heading":
+            path_bi[col] = (1 - t_values) * path_s[col]  + t_values * path_e_s[col]
+        else:
+            heading1 = (path_s[col] + np.pi) % (2 * np.pi) - np.pi
+            heading2 = (path_e_s[col] + np.pi) % (2 * np.pi) - np.pi
+            
+            smooth_heading = (1-t_values) * heading1 + t_values * heading2
+            smooth_heading = smooth_heading % (2 * np.pi)
+            
+            path_bi[col] = smooth_heading
+            
+        if col != "Slope":
+            delta_bi[delta_col] = np.diff(np.insert(path_bi[col], 0, s[col]))
+            delta_e_s[delta_col] = np.diff(np.insert(path_e_s[col], 0, s[col]))
+        else:
+            delta_bi[delta_col] = path_bi[col]
+            delta_e_s[delta_col] = path_e_s[col]
+    
+    return  path_bi, delta_bi, delta_e_s
+
+
+%matplotlib inline
+def visuallize(s, e, delta_p):
+
+    for col, delta_col in zip(["Height", "Speed", "Heading", "Slope", "Radius"],
+                ["height", "speed", "heading", "Slope", "radius"]):
+        if col not in ["Slope"]:
+            print(col, "diff as", e[col] - s[col], " ", "estimated as", np.sum(delta_p[delta_col]))
+        else:
+            print(col, "diff as", e[col] - s[col], " ", "estimated as", delta_p[delta_col][-1])
+            
+    print("start", f"heading : {s['Heading']}", f"radius : {s['Radius']}", f"height : {s['Height']}", f"slope : {s['Slope']}", f"speed : {s['Speed']}",)
+    print("end", f"heading : {e['Heading']}", f"radius : {e['Radius']}", f"height : {e['Height']}", f"slope : {e['Slope']}", f"speed : {e['Speed']}",)
+    print("estimated end", f"heading : {s['Heading'] + np.sum(delta_p['heading'])}", f"radius : {s['Radius'] + np.sum(delta_p['radius'])}", f"height : {s['Height']+ np.sum(delta_p['height'])}", f"slope : {delta_p['Slope'][-1]}", f"speed : {s['Speed']+ np.sum(delta_p['speed'])}",)
+
+    theta = np.pi/2 - (np.cumsum(delta_p["heading"]) + s["Heading"])
+    radius = np.cumsum(delta_p["radius"]) + s["Radius"]
+    height = np.cumsum(delta_p["height"]) + s["Height"]
+
+    x = radius * np.cos(theta)
+    y = radius * np.sin(theta)
+    z = height
+    
+    s_x, s_y = s["Radius"] * np.cos(np.pi/2 - s["Heading"]), s["Radius"] * np.sin(np.pi/2 - s["Heading"])
+    e_x, e_y = e["Radius"] * np.cos(np.pi/2 - e["Heading"]), e["Radius"] * np.sin(np.pi/2 - e["Heading"])
+    
+    fig = plt.figure(figsize=(18, 9))
+    ax = fig.add_subplot(121, projection='3d')
+    ax.scatter(x, y, z, label='Path')
+
+    ax.scatter(s_x, s_y,
+            s["Height"],
+            color='red', s=100, label='Start Point')
+    ax.scatter(e_x, e_y,
+            e["Height"],
+            color='blue', s=100, label='End Point')
+
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Height')
+    ax.set_title('Cylindrical Coordinate 3D')
+    ax.legend()
+
+    az = fig.add_subplot(122)
+    
+    az.scatter(x, y, label='Path', s = 25)
+    az.scatter(s_x, s_y, color='red', s=100, label='Start Point')
+    az.scatter(e_x, e_y, color='blue', s=100, label='End Point')
+    az.set_title('Cylindrical Coordinate 2D (North = Heading 0)')
+    az.set_xlabel('East-West (X)')
+    az.set_ylabel('North-South (Y)')
+
+    # 그래프 크기 고정 (500x500)
+    min_ = min(s_x, e_x, s_y, e_y)
+    max_ = max(s_x, e_x, s_y, e_y)
+    az.set_xlim(min_ - 300, max_+300)
+    az.set_ylim(min_ - 300, max_+300)
+    az.grid(True)
+    az.legend()
+
+    plt.show()
+
+s, e, delta_s = initialize(result[1], linear_slope=True)
+ss, ee, delta_e = initialize(result[1], reverse=True, linear_slope=True)
+
+path_bi, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e)
+
+visuallize(s, e, delta_s)
+visuallize(s, e, delta_e_s)
+visuallize(s, e, delta_bi)
