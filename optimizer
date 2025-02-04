@@ -259,7 +259,23 @@ class optimizer():
         
         return self.DV
     
-    
-    
+def opt_result(new_DV):
+    heading = new_DV[:optimizer_.N]
+    Slope = new_DV[1 * optimizer_.N:2 * optimizer_.N]
+    speed = new_DV[2 * optimizer_.N:3 * optimizer_.N]
+    Speed = s["Speed"] + np.cumsum(speed)
+    height = Speed * np.tan(Slope)
+    radius = Speed * np.cos(heading)
+
+    delta_opt = {
+        "heading" : heading,
+        "Slope" : Slope,
+        "speed" : speed,
+        "height" : height,
+        "radius" : radius
+    }
+
+    visuallize(s, e, delta_opt)
+
 
 optimizer_ = optimizer(s, e, delta_bi)
