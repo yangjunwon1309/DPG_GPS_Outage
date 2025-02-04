@@ -101,7 +101,7 @@ def initialize(df, linear_slope=True, reverse = False):
 
     if reverse:
         start_point, end_point = end_point.copy(), start_point.copy()
-        
+
         # radius 축을 North로 잡으면 theta 둘 필요 없음. 사용하고 있지 않기도 함.
         start_point["Radius"] = 0
         end_point["Radius"] = distance
@@ -177,35 +177,36 @@ def initialize(df, linear_slope=True, reverse = False):
     delta_p["radius"] = init_radius(start_point, delta_p["radius"], delta_p["speed"], delta_p["heading"], time_delta)
 
 
-    return start_point, end_point, delta_p
+    return start_point, end_point, delta_p, time_delta
 
 def bi_direction(s, e, delta_s, delta_e):
     # 양방향으로 초기 값 생성하고, 내분해서 최종 초기화
     path_s = {}
     path_e = {}
     path_bi = {}
-    
+
     delta_e_s = {}
     delta_bi = {}
-    
+
     N_ = len(delta_s["heading"])
     t_values = np.linspace(0, 1, N_)
-    
+
+    s["Heading"] = s["Heading"] % (2 * np.pi)
     e_e = e.copy()
     e_e["Radius"] = 0.0
     e_e["Heading"] = e["Heading"] + np.pi
-    
+
     for col, delta_col in zip(["Height", "Speed", "Heading", "Radius"],
                 ["height", "speed", "heading", "radius"]):
         path_s[col] = s[col] + np.cumsum(delta_s[delta_col])
         path_e[col] = (e_e[col] + np.cumsum(delta_e[delta_col]))[::-1]
-    
+
     path_s["Slope"] = delta_s["Slope"]
     path_e["Slope"] = - delta_e["Slope"]
-    
+
     r_ = path_e["Radius"]
     alpha = -(e["Heading"] - s["Heading"]) + np.pi
-    
+
     x = r_ * np.sin(path_e["Heading"])
     y = r_ * np.cos(path_e["Heading"])
 
@@ -216,36 +217,42 @@ def bi_direction(s, e, delta_s, delta_e):
     y_shifted = y - dy
     x_new = np.cos(alpha) * x_shifted - np.sin(alpha) * y_shifted
     y_new = np.sin(alpha) * x_shifted + np.cos(alpha) * y_shifted
-    
+
     x_new, y_new = -y_new, -x_new
 
     radius_new = np.sqrt(x_new**2 + y_new**2)
     heading_cylindrical =  np.arctan2(y_new, x_new)
-    
+
     path_e_s = path_e.copy()
     path_e_s["Heading"] = heading_cylindrical % (2*np.pi)
     path_e_s["Radius"] = radius_new
-    
-    for col, delta_col in zip(["Height", "Speed", "Heading", "Slope", "Radius"],
-                ["height", "speed", "heading", "Slope", "radius"]):
+
+    for col, delta_col in zip(["Height", "Heading", "Radius", "Speed", "Slope",  ],
+                ["height", "heading", "radius", "speed", "Slope",  ]):
         if col != "Heading":
             path_bi[col] = (1 - t_values) * path_s[col]  + t_values * path_e_s[col]
         else:
             heading1 = (path_s[col] + np.pi) % (2 * np.pi) - np.pi
             heading2 = (path_e_s[col] + np.pi) % (2 * np.pi) - np.pi
-            
+
             smooth_heading = (1-t_values) * heading1 + t_values * heading2
             smooth_heading = smooth_heading % (2 * np.pi)
-            
+
             path_bi[col] = smooth_heading
-            
-        if col != "Slope":
+
+    for col, delta_col in zip(["Height", "Heading", "Radius", "Speed", "Slope",  ],
+                ["height", "heading", "radius", "speed", "Slope",  ]):
+
+        if (col != "Slope") and (col != "Speed"):
             delta_bi[delta_col] = np.diff(np.insert(path_bi[col], 0, s[col]))
             delta_e_s[delta_col] = np.diff(np.insert(path_e_s[col], 0, s[col]))
-        else:
-            delta_bi[delta_col] = path_bi[col]
-            delta_e_s[delta_col] = path_e_s[col]
-    
+        elif (col == "Slope"):
+            delta_bi[delta_col] = np.arctan2(delta_bi["height"], (s["Speed"] + np.cumsum(delta_bi["speed"] + 1e-10)))
+            delta_e_s[delta_col] = np.arctan2(delta_e_s["height"], (s["Speed"] + np.cumsum(delta_e_s["speed"] + 1e-10)))
+        else :
+            delta_bi[delta_col] = np.diff(np.insert(delta_bi["radius"]/(np.cos(delta_bi["heading"]) + 1e-10), 0, s[col]))
+            delta_e_s[delta_col] = np.diff(np.insert(delta_e_s["radius"]/(np.cos(delta_e_s["heading"]) + 1e-10), 0, s[col]))
+
     return  path_bi, delta_bi, delta_e_s
 
 
@@ -258,7 +265,7 @@ def visuallize(s, e, delta_p):
             print(col, "diff as", e[col] - s[col], " ", "estimated as", np.sum(delta_p[delta_col]))
         else:
             print(col, "diff as", e[col] - s[col], " ", "estimated as", delta_p[delta_col][-1])
-            
+
     print("start", f"heading : {s['Heading']}", f"radius : {s['Radius']}", f"height : {s['Height']}", f"slope : {s['Slope']}", f"speed : {s['Speed']}",)
     print("end", f"heading : {e['Heading']}", f"radius : {e['Radius']}", f"height : {e['Height']}", f"slope : {e['Slope']}", f"speed : {e['Speed']}",)
     print("estimated end", f"heading : {s['Heading'] + np.sum(delta_p['heading'])}", f"radius : {s['Radius'] + np.sum(delta_p['radius'])}", f"height : {s['Height']+ np.sum(delta_p['height'])}", f"slope : {delta_p['Slope'][-1]}", f"speed : {s['Speed']+ np.sum(delta_p['speed'])}",)
@@ -270,13 +277,13 @@ def visuallize(s, e, delta_p):
     x = radius * np.cos(theta)
     y = radius * np.sin(theta)
     z = height
-    
+
     s_x, s_y = s["Radius"] * np.cos(np.pi/2 - s["Heading"]), s["Radius"] * np.sin(np.pi/2 - s["Heading"])
     e_x, e_y = e["Radius"] * np.cos(np.pi/2 - e["Heading"]), e["Radius"] * np.sin(np.pi/2 - e["Heading"])
-    
+
     m_idx = len(delta_p["height"]) // 2
     m_x, m_y, m_z = x[m_idx], y[m_idx], z[m_idx]
-    
+
     fig = plt.figure(figsize=(18, 9))
     ax = fig.add_subplot(121, projection='3d')
     ax.scatter(x, y, z, label='Path')
@@ -290,7 +297,7 @@ def visuallize(s, e, delta_p):
     ax.scatter(m_x, m_y,
             m_z,
             color='green', s=100, label='Middle Point')
-    
+
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Height')
@@ -298,7 +305,7 @@ def visuallize(s, e, delta_p):
     ax.legend()
 
     az = fig.add_subplot(122)
-    
+
     az.scatter(x, y, label='Path', s = 25)
     az.scatter(s_x, s_y, color='red', s=100, label='Start Point')
     az.scatter(e_x, e_y, color='blue', s=100, label='End Point')
@@ -317,8 +324,8 @@ def visuallize(s, e, delta_p):
 
     plt.show()
 
-s, e, delta_s = initialize(result[1], linear_slope=True)
-ss, ee, delta_e = initialize(result[1], reverse=True, linear_slope=True)
+s, e, delta_s, time_delta_s = initialize(result[1], linear_slope=True)
+ss, ee, delta_e, time_delta_e = initialize(result[1], reverse=True, linear_slope=True)
 
 path_bi, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e)
 
