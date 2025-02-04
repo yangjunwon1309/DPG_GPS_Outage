@@ -1,0 +1,82 @@
+
+def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
+    data_outage = data.loc[data["numSV"] == 0]
+
+    def group_consecutive(data):
+     return np.split(data, np.where(np.diff(data.index) != 1)[0] + 1)
+
+    data_outage_split = group_consecutive(data_outage)
+
+    def filter_outage_sections(data_outage_split, speed_col="Speed", threshold=0.7):
+        """
+        주어진 리스트에서 정지 인덱스가 전체의 70% 이상인 섹션을 제거.
+        """
+        filtered_sections = []
+        for outage_section in data_outage_split:
+            zero_vel_index = outage_section.loc[(outage_section[speed_col] < 1)].index
+            if len(zero_vel_index) <= threshold * len(outage_section):
+                filtered_sections.append(outage_section)
+        return filtered_sections
+
+    data_outage_split = filter_outage_sections(data_outage_split)
+    # 여기에서 시작 끝 점 기준으로 특정 인덱스 범위만큼 더 간 값들까지 붙여서 반환
+
+    for idx, outage_section in enumerate(data_outage_split):
+
+        s_i, o_i = outage_section.index[0], outage_section.index[-1]
+        print(s_i, o_i)
+
+        p_si, p_oi = data.loc[s_i - 10], data.loc[o_i + 10]
+
+        try:
+            s_o = s_i - int(s_dist/p_si["Speed"])
+        except Exception as e:
+            print("zero speed, detect as default distance")
+            s_o = s_i - 7
+
+        try:
+            o_o = o_i + int(e_dist/p_oi["Speed_175"])
+        except Exception as e:
+            print("zero speed, detect as default distance")
+            o_o = o_i + 5
+
+        not_sat_s = True
+        while not_sat_s:
+            if (data.loc[s_o]["numSV"] > numSV_ths) and (data.loc[o_o]["numSV"] > numSV_ths):
+                not_sat_s = False
+            else:
+                if (data.loc[s_o]["numSV"] <= numSV_ths) :
+                    s_o = s_o - 1
+                if (data.loc[o_o]["numSV"] <= numSV_ths):
+                    o_o = o_o + 1
+
+
+        outage_section_fin = pd.concat([data.loc[s_o:s_i], outage_section, data.loc[o_i + 1: o_o + 1]], axis = 0)
+
+        outage_section_fin["TimeStamp"] = pd.to_datetime(outage_section_fin["datetime"], format="%Y-%m-%d %H:%M:%S")
+        outage_section_fin["UnixTime"] = outage_section_fin["TimeStamp"].apply(lambda x: x.timestamp())
+        # time_delta = outage_section_fin["UnixTime"].diff()
+        # time_delta = np.insert(time_delta, 0, time_delta[0])
+
+        outage_section_fin = outage_section_fin.loc[outage_section_fin["UnixTime"].diff()> 0]
+
+        data_outage_split[idx] = outage_section_fin#.drop(columns=["UnixTime"])
+
+    return data_outage_split
+
+pio.renderers.default = "browser"
+
+acc_file = pd.read_csv(fr"C:\Users\양준원\PycharmProjects\DPS_GPS_Outage\20240909.csv").drop(columns=["Unnamed: 0"])
+acc_file = calibration(acc_file)
+
+result = detection(acc_file.loc[:5000])
+
+for outage_file in result:
+    #display(outage_file.describe(include="all"))
+    fig = px.scatter_mapbox(outage_file, lat = f'lat', lon= f'lon', color= f"UnixTime", zoom=15, mapbox_style='open-street-map', color_continuous_scale='turbo').update_traces(marker={'size':5})
+    fig.update_layout(
+        width = 1200,
+        height = 900,
+        margin = dict(l=0, r=0, t=0, b=0),
+    )
+    fig.show()
