@@ -1,28 +1,265 @@
 
 class optimizer():
-    def __init__(self, s, e, delta, epsilon = 1e-4, max_iter = 100):
+    def __init__(self, s, e, delta, epsilon = 1e-3, max_iter = 100):
         # DV 설정하기
-        self.DV = np.vstack([delta["heading"], delta["Slope"], delta["speed"]])
+        self.DV = np.vstack([delta["heading"].reshape(-1, 1), delta["Slope"].reshape(-1, 1), delta["speed"].reshape(-1, 1)]).flatten()
         self.s = s
         self.e = e
-        self.m = len(delta["heading"]) * 6
+        self.m = int(len(delta["heading"]) * 6)
+        self.N = int(self.m // 6)
         self.mu = 10 * np.ones(self.m)
         self.epsilon = epsilon
         self.max_iter = max_iter
+        self.weight = np.array([0.5, 1, 10, 100]) # heading, speed, height, radius
+        self.min_turn_R = 8
+        self.grad_g = self.grad_g(self.N)
+        self.tau = self.compute_tau()
         
-    def cost_cal(self):
-        pass
+    def grad_g(self, N):
+        I = np.eye(N)
+        Z = np.zeros((N, N))
+        L = np.tril(np.ones((N, N)))
+        R = self.min_turn_R
+        M = np.block([
+        [  I,   Z,   Z ],
+        [ -I,   Z,   Z ],
+        [  Z,   I,  -L/R ],
+        [  Z,  -I,  -L/R ],
+        [  Z,   Z,   I ],
+        [  Z,   Z,  -I ]
+        ])
+        
+        return M
+        
+    def cost_cal(self, DV):
+        """
+        s 기준 e 예측값과 e 간의 weighted 차이 계산
+        """
+        heading = DV[0:self.N]
+        Heading = self.s["Heading"] + np.cumsum(heading)
+        Slope = DV[self.N : 2 * self.N]
+        Speed = self.s["Speed"] + np.cumsum(DV[2*self.N : 3 * self.N])
+        Height = self.s["Height"] + np.sum(Speed * np.tan(Slope))
+        Radius = 0.0 + np.sum(Speed * np.cos(heading))
+        
+        e_estimate = np.array([
+            Heading[-1],
+            Speed[-1],
+            Height,
+            Radius
+        ])
+        
+        e_true = np.array([
+        self.e["Heading"],
+        self.e["Speed"],
+        self.e["Height"],
+        self.e["Radius"]
+        ])
+
+        residual_ = e_true - e_estimate
+        
+        cost = (residual_ / self.weight) @ (residual_ / self.weight).T
+        
+        return cost
     
+    def constraint_cal(self, DV, R = 8, slope_ths = 0.1, acc_ths = 3):
+        """
+        제약조건 식 계산하기, 6N x 1
+        """
+        Slope = DV[0:self.N]
+        heading = DV[self.N : 2 * self.N]
+        speed = DV[2*self.N : 3 * self.N]
+        Speed = self.s["Speed"] + np.cumsum(speed)
+        
+        # 위에서 8m로 지정
+        R = self.min_turn_R
+        
+        Slope_cst = np.vstack([
+            (Slope - slope_ths * np.ones(len(Slope))).reshape(-1,1),
+            (-Slope - slope_ths * np.ones(len(Slope))).reshape(-1,1)
+        ])
+        
+        heading_cst = np.vstack([
+            (heading - Speed/R).reshape(-1,1),
+            (-heading - Speed/R).reshape(-1,1)
+        ])
+        
+        speed_cst = np.vstack([
+            (speed - acc_ths).reshape(-1,1),
+            (-speed - acc_ths).reshape(-1,1)
+        ])
+        
+        return np.vstack([
+            Slope_cst, heading_cst, speed_cst
+        ]).flatten()
     
-    def compute_residuals(self):
-        pass
+    def hessian_cal(self, DV = None, epsilon=1e-5):
+        if DV is None:
+            DV = self.DV
+        
+        x = np.asarray(DV, dtype=float)
+        n = x.size
+        hessian = np.zeros((n, n))
+        
+        # f(x) 값 (필요시 사용)
+        fx = self.cost_cal(x)
+        
+        # 대각 성분 계산 (이중 중앙 차분)
+        for i in range(n):
+            x_forward = np.copy(x)
+            x_backward = np.copy(x)
+            x_forward[i] += epsilon
+            x_backward[i] -= epsilon
+            f_forward = self.cost_cal(x_forward)
+            f_backward = self.cost_cal(x_backward)
+            hessian[i, i] = (f_forward - 2 * fx + f_backward) / (epsilon ** 2)
+        
+        # 비대각 성분 계산 (혼합 편미분: 중앙 차분)
+        for i in range(n):
+            for j in range(i+1, n):
+                x_pp = np.copy(x)
+                x_pm = np.copy(x)
+                x_mp = np.copy(x)
+                x_mm = np.copy(x)
+                # 두 변수에 대해 epsilon 만큼 변화
+                x_pp[i] += epsilon; x_pp[j] += epsilon  # f(x_i+eps, x_j+eps)
+                x_pm[i] += epsilon; x_pm[j] -= epsilon  # f(x_i+eps, x_j-eps)
+                x_mp[i] -= epsilon; x_mp[j] += epsilon  # f(x_i-eps, x_j+eps)
+                x_mm[i] -= epsilon; x_mm[j] -= epsilon  # f(x_i-eps, x_j-eps)
+                
+                f_pp = self.cost_cal(x_pp)
+                f_pm = self.cost_cal(x_pm)
+                f_mp = self.cost_cal(x_mp)
+                f_mm = self.cost_cal(x_mm)
+                
+                # 중앙 차분 공식 (혼합 편미분)
+                hess_ij = (f_pp - f_pm - f_mp + f_mm) / (4 * epsilon**2)
+                hessian[i, j] = hess_ij
+                hessian[j, i] = hess_ij  # Hessian은 대칭 행렬
+        
+        return hessian
     
-    def compute_step(self):
-        pass
+    def jacobian_cal(self, DV = None, epsilon=1e-5):
+        if DV is None:
+            DV = self.DV
+            
+        x = np.asarray(DV, dtype=float)
+        n = x.size
+        jacobian = np.zeros((1, n))
+        
+        for i in range(n):
+            x_forward = np.copy(x)
+            x_backward = np.copy(x)
+            x_forward[i] += epsilon
+            x_backward[i] -= epsilon
+            f_forward = self.cost_cal(x_forward)
+            f_backward = self.cost_cal(x_backward)
+            jacobian[0, i] = (f_forward - f_backward) / (2 * epsilon)
+        
+        return jacobian
+    
+    def compute_tau(self, DV = None):
+        if DV is None:
+            DV = self.DV
+            
+        tau = -(self.mu.T @ self.constraint_cal(DV))/self.m
+        return tau
+    
+    def compute_residuals(self, DV = None):
+        """
+        primal residual, central residual 계산
+        """
+        if DV is None:
+            DV = self.DV
+            
+        jacobian = self.jacobian_cal(DV)
+        hessian = self.hessian_cal(DV)
+        g = self.constraint_cal(DV)
+        
+        dual_residual = (jacobian + self.grad_g.T @ self.mu).reshape(-1, 1)
+        central_residual = (np.eye(self.N * 6) @ g  + self.tau * np.ones(self.N * 6)).reshape(-1, 1)
+        
+        residuals_ = np.vstack([dual_residual, central_residual]).flatten()
+        
+        return residuals_, jacobian, hessian, g
+    
+    def compute_step(self, residuals, hessian, g):
+        """
+        newton step 계산, delta x, u 벡터 계산산
+        """
+        #residuals = self.compute_residuals()
+        
+        grad_residual = np.vstack([np.hstack([hessian, self.grad_g.T]),
+                                   np.hstack([np.diag(self.mu) @ self.grad_g, np.diag(g)])])
+        
+        try:
+            delta_x = np.linalg.inv(grad_residual) @ -residuals
+        except Exception as e:
+            print("singular matrix")
+            delta_x = np.linalg.pinv(grad_residual + 10e-7 * np.eye(self.N * 9)) @ -residuals
+        
+        return delta_x
+        
+    
+    def backtracking_line_search(self, delta_x, residuals, alpha = 0.5, beta = 0.99):
+        delta_DV = delta_x[:self.N * 3]
+        delta_mu = delta_x[self.N * 3:self.N * 9]
+        
+        theta_ = min(1, min(-self.mu / delta_mu))
+        
+        print(delta_DV.shape)
+        print(self.DV.shape)
+        print(theta_)
+        
+        constraint_match = False
+        
+        while not constraint_match:
+            if np.all(self.constraint_cal(self.DV + theta_ * delta_DV) < 0) :
+                constraint_match = True
+            else : 
+                theta_ *= beta
+        
+        residuals_match = False
+        
+        while not residuals_match:
+            residuals_update, jacobian, hessian, g = self.compute_residuals(self.DV + theta_ * delta_DV)
+            
+            # 그냥 residual 말고 cost 기준으로 optimzie?
+            # step 고르는 것에서 시간 엄청 소요 됨
+            
+            if np.linalg.norm(residuals_update) <= (1 - alpha * theta_) * np.linalg.norm(residuals) :
+                residuals_match = True
+            else:
+                theta_ *= beta
+        
+        return theta_
     
     def optimize(self):
-        pass
+        iter_ = 0
+        
+        while iter_ <= self.max_iter:
+            iter_ += 1
+            
+            residuals_, jacobian, hessian, g = self.compute_residuals(self.DV)
+            dual_norm = np.linalg.norm(residuals_[:self.N * 3])
+            central_norm = np.linalg.norm(residuals_[self.N * 3:self.N * 9])
+            
+            if  (dual_norm< self.epsilon) and (central_norm< self.epsilon) and (self.tau * self.m < 100):
+                print("residual lower than ths, end optimization")
+                break
+            
+            delta_x = self.compute_step(residuals_, hessian, g)
+            theta_ = self.backtracking_line_search(delta_x, residuals_)
+            
+            self.DV = self.DV + theta_ * delta_x[:self.N * 3]
+            self.mu = self.mu + theta_ * delta_x[self.N * 3:self.N * 9]
+            self.tau = self.compute_tau()
+            
+            print(f"iter {iter_}: residual dual {dual_norm} central {central_norm}")
+        
+        return self.DV
     
     
     
-    pass
+
+optimizer_ = optimizer(s, e, delta_bi)
