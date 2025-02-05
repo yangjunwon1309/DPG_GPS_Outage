@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", message="'DataFrame.swapaxes' is deprecated")
 
 def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
     data_outage = data.loc[data["numSV"] == 0]
@@ -66,7 +68,7 @@ def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
 
 pio.renderers.default = "browser"
 
-acc_file = pd.read_csv(fr"C:\Users\양준원\PycharmProjects\DPS_GPS_Outage\20240909.csv").drop(columns=["Unnamed: 0"])
+acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
 acc_file = calibration(acc_file)
 
 result = detection(acc_file.loc[:5000])
