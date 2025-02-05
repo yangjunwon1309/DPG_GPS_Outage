@@ -1,17 +1,31 @@
 
 class optimizer():
-    def __init__(self, s, e, delta, epsilon = 1e-3, max_iter = 100):
-        # DV 설정하기
-        self.DV = np.vstack([delta["heading"].reshape(-1, 1), delta["Slope"].reshape(-1, 1), delta["speed"].reshape(-1, 1)]).flatten()
+    def __init__(self, s, e, delta, time_delta = None, epsilon = 1e-3, max_iter = 100):
+        
         self.s = s
         self.e = e
+        self.e_true = np.array([
+        (self.e["Heading"]) , #% (2 * np.pi)
+        self.e["Speed"],
+        self.e["Height"],
+        self.e["Radius"]
+        ])
+        
         self.m = int(len(delta["heading"]) * 6)
         self.N = int(self.m // 6)
         self.mu = 10 * np.ones(self.m)
         self.epsilon = epsilon
-        self.max_iter = max_iter
-        self.weight = np.array([0.5, 1, 10, 100]) # heading, speed, height, radius
+        self.max_iter = 100
+        self.weight = np.array([5 * 1e-3, 5*1e2, 5, 3]) # heading, speed, height, radius
         self.min_turn_R = 8
+        
+        self.DV = np.vstack([delta["heading"].reshape(-1, 1), delta["Slope"].reshape(-1, 1), delta["speed"].reshape(-1, 1)]).flatten()
+        self.org_slope = delta["Slope"].reshape(-1, 1)
+        if time_delta is None:
+            self.time_delta = np.ones(self.N)
+        else:
+            self.time_delta = time_delta
+            
         self.grad_g = self.grad_g(self.N)
         self.tau = self.compute_tau()
         
@@ -35,30 +49,29 @@ class optimizer():
         """
         s 기준 e 예측값과 e 간의 weighted 차이 계산
         """
-        heading = DV[0:self.N]
-        Heading = self.s["Heading"] + np.cumsum(heading)
-        Slope = DV[self.N : 2 * self.N]
-        Speed = self.s["Speed"] + np.cumsum(DV[2*self.N : 3 * self.N])
-        Height = self.s["Height"] + np.sum(Speed * np.tan(Slope))
-        Radius = 0.0 + np.sum(Speed * np.cos(heading))
+        dv_heading = DV[:self.N]
+        dv_slope = DV[self.N:2*self.N]
+        dv_speed = DV[2*self.N:3*self.N]
         
-        e_estimate = np.array([
-            Heading[-1],
-            Speed[-1],
-            Height,
-            Radius
-        ])
+        # 예측된 최종 값 계산
+        Heading_pred = (self.s["Heading"] + np.sum(dv_heading)) #% (2 * np.pi)
+        Speed_cum = self.s["Speed"] + np.cumsum(dv_speed)
+        Speed_pred = Speed_cum[-1]
+        Height_pred = self.s["Height"] + np.sum(Speed_cum * np.tan(dv_slope))
         
-        e_true = np.array([
-        self.e["Heading"],
-        self.e["Speed"],
-        self.e["Height"],
-        self.e["Radius"]
-        ])
-
-        residual_ = e_true - e_estimate
+        Radius_pred = 0.0 + np.sum(Speed_cum * np.cos(dv_heading))
         
-        cost = (residual_ / self.weight) @ (residual_ / self.weight).T
+        e_estimate = np.array([Heading_pred, Speed_pred, Height_pred, Radius_pred])
+        e_true = self.e_true #- np.array([dv_heading[-1], dv_speed[-1], Speed_pred * np.tan(dv_slope[-1]), Speed_pred * np.cos(dv_heading[-1]) ])
+        
+        # 각 요소별 residual을 weight로 스케일 조정
+        residual_ = (e_true - e_estimate) / self.weight
+        cost_primary = 0.5 * np.sum(residual_**2)
+        
+        lambda_slope = 1.0
+        cost_slope = 0.5 * lambda_slope * np.sum((dv_slope - self.org_slope.flatten())**2) / self.N
+        
+        cost = cost_primary + cost_slope
         
         return cost
     
@@ -66,8 +79,8 @@ class optimizer():
         """
         제약조건 식 계산하기, 6N x 1
         """
-        Slope = DV[0:self.N]
-        heading = DV[self.N : 2 * self.N]
+        heading = DV[0:self.N]
+        Slope = DV[self.N : 2 * self.N]
         speed = DV[2*self.N : 3 * self.N]
         Speed = self.s["Speed"] + np.cumsum(speed)
         
@@ -75,25 +88,25 @@ class optimizer():
         R = self.min_turn_R
         
         Slope_cst = np.vstack([
-            (Slope - slope_ths * np.ones(len(Slope))).reshape(-1,1),
-            (-Slope - slope_ths * np.ones(len(Slope))).reshape(-1,1)
+            (Slope - slope_ths * np.ones(self.N) ).flatten(),
+            (-Slope - slope_ths * np.ones(self.N) ).flatten()
         ])
         
         heading_cst = np.vstack([
-            (heading - Speed/R).reshape(-1,1),
-            (-heading - Speed/R).reshape(-1,1)
+            (heading - Speed*self.time_delta /R).flatten(),
+            (-heading - Speed* self.time_delta /R).flatten()
         ])
         
         speed_cst = np.vstack([
-            (speed - acc_ths).reshape(-1,1),
-            (-speed - acc_ths).reshape(-1,1)
+            (speed - acc_ths).flatten(),
+            (-speed - acc_ths).flatten()
         ])
         
         return np.vstack([
-            Slope_cst, heading_cst, speed_cst
+          heading_cst, Slope_cst, speed_cst
         ]).flatten()
     
-    def hessian_cal(self, DV = None, epsilon=1e-5):
+    def hessian_cal(self, DV = None, epsilon=1e-6):
         if DV is None:
             DV = self.DV
         
@@ -139,7 +152,7 @@ class optimizer():
         
         return hessian
     
-    def jacobian_cal(self, DV = None, epsilon=1e-5):
+    def jacobian_cal(self, DV = None, epsilon=1e-6):
         if DV is None:
             DV = self.DV
             
@@ -161,8 +174,9 @@ class optimizer():
     def compute_tau(self, DV = None):
         if DV is None:
             DV = self.DV
-            
-        tau = -(self.mu.T @ self.constraint_cal(DV))/self.m
+        
+        g = self.constraint_cal(DV)
+        tau =  - (np.dot(self.mu, g)) / self.m
         return tau
     
     def compute_residuals(self, DV = None):
@@ -177,7 +191,7 @@ class optimizer():
         g = self.constraint_cal(DV)
         
         dual_residual = (jacobian + self.grad_g.T @ self.mu).reshape(-1, 1)
-        central_residual = (np.eye(self.N * 6) @ g  + self.tau * np.ones(self.N * 6)).reshape(-1, 1)
+        central_residual = (g  + self.tau * np.ones(self.N * 6)).reshape(-1, 1)
         
         residuals_ = np.vstack([dual_residual, central_residual]).flatten()
         
@@ -193,23 +207,24 @@ class optimizer():
                                    np.hstack([np.diag(self.mu) @ self.grad_g, np.diag(g)])])
         
         try:
-            delta_x = np.linalg.inv(grad_residual) @ -residuals
+            delta_x =  -grad_residual @ residuals #np.linalg.inv(grad_residual) 
         except Exception as e:
             print("singular matrix")
-            delta_x = np.linalg.pinv(grad_residual + 10e-7 * np.eye(self.N * 9)) @ -residuals
+            delta_x = np.linalg.pinv(grad_residual + 10e-6 * np.eye(self.N * 9)) @ -residuals
         
         return delta_x
         
     
-    def backtracking_line_search(self, delta_x, residuals, alpha = 0.5, beta = 0.99):
+    def backtracking_line_search(self, delta_x, residuals, alpha = 0.2, beta = 0.99):
         delta_DV = delta_x[:self.N * 3]
         delta_mu = delta_x[self.N * 3:self.N * 9]
         
-        theta_ = min(1, min(-self.mu / delta_mu))
-        
-        print(delta_DV.shape)
-        print(self.DV.shape)
-        print(theta_)
+        idx = np.where(delta_mu < 0)[0]
+        if idx.size > 0:
+            theta_candidate = np.min(-self.mu[idx] / delta_mu[idx])
+            theta_ = min(1, theta_candidate)
+        else:
+            theta_ = 1.0
         
         constraint_match = False
         
@@ -220,31 +235,38 @@ class optimizer():
                 theta_ *= beta
         
         residuals_match = False
+        org_cost = self.cost_cal(self.DV)
         
         while not residuals_match:
-            residuals_update, jacobian, hessian, g = self.compute_residuals(self.DV + theta_ * delta_DV)
+            new_DV = self.DV + theta_ * delta_DV
+            new_cost = self.cost_cal(new_DV)    
+            # residuals_update, jacobian, hessian, g = self.compute_residuals()
             
             # 그냥 residual 말고 cost 기준으로 optimzie?
             # step 고르는 것에서 시간 엄청 소요 됨
             
-            if np.linalg.norm(residuals_update) <= (1 - alpha * theta_) * np.linalg.norm(residuals) :
+            if new_cost <= (1 - alpha * theta_) * org_cost :  #np.linalg.norm(residuals)
                 residuals_match = True
             else:
                 theta_ *= beta
         
-        return theta_
+        print(theta_)
+        return theta_ #* (0.9 ** 10)
     
     def optimize(self):
         iter_ = 0
         
         while iter_ <= self.max_iter:
-            iter_ += 1
             
             residuals_, jacobian, hessian, g = self.compute_residuals(self.DV)
             dual_norm = np.linalg.norm(residuals_[:self.N * 3])
             central_norm = np.linalg.norm(residuals_[self.N * 3:self.N * 9])
+            cost_ = self.cost_cal(self.DV)
             
-            if  (dual_norm< self.epsilon) and (central_norm< self.epsilon) and (self.tau * self.m < 100):
+            print(f"iter {iter_}) dual res: {dual_norm}, central res: {central_norm}, cost: {cost_}")
+            
+            if  (dual_norm< 990) and (central_norm< 300) and (cost_ < 0.5):
+                print(f"iter {iter_}: residual dual {dual_norm} central {central_norm}")
                 print("residual lower than ths, end optimization")
                 break
             
@@ -255,11 +277,15 @@ class optimizer():
             self.mu = self.mu + theta_ * delta_x[self.N * 3:self.N * 9]
             self.tau = self.compute_tau()
             
-            print(f"iter {iter_}: residual dual {dual_norm} central {central_norm}")
-        
+            
+            iter_ += 1
+            
         return self.DV
     
-def opt_result(new_DV):
+    
+def opt_result(s, e, optimizer_, ref_GPS = None):
+
+    new_DV = optimizer_.DV
     heading = new_DV[:optimizer_.N]
     Slope = new_DV[1 * optimizer_.N:2 * optimizer_.N]
     speed = new_DV[2 * optimizer_.N:3 * optimizer_.N]
@@ -274,8 +300,8 @@ def opt_result(new_DV):
         "height" : height,
         "radius" : radius
     }
-
-    visuallize(s, e, delta_opt)
-
-
-optimizer_ = optimizer(s, e, delta_bi)
+    
+    if ref_GPS is None:
+        visuallize(s, e, delta_opt)
+    else:
+        visuallize(s, e, delta_opt, ref_GPS)
