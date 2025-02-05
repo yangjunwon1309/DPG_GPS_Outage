@@ -35,10 +35,10 @@ class optimizer():
         L = np.tril(np.ones((N, N)))
         R = self.min_turn_R
         M = np.block([
-        [  I,   Z,   Z ],
-        [ -I,   Z,   Z ],
-        [  Z,   I,  -L/R ],
-        [  Z,  -I,  -L/R ],
+        [  Z,   I,   Z ],
+        [ -Z,   I,   Z ],
+        [  I,   Z,  -L/R ],
+        [  I,  -Z,  -L/R ],
         [  Z,   Z,   I ],
         [  Z,   Z,  -I ]
         ])
