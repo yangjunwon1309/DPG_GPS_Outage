@@ -1,0 +1,93 @@
+def bi_optimize(data, bi_inital = True):
+    mid_idx = len(data) // 2
+    path_s = {}
+    point_attribute = ["Height", "Heading", "X", "Y", "Speed", "Slope"]
+    
+    s, e, delta_s, time_delta_s = initialize(data, linear_slope=True)
+    
+    for col, delta_col in zip(["Height", "Heading", "X", "Y", "Speed", ],
+                ["height", "heading", "x", "y", "speed", ]):
+        path_s[col] = s[col] + np.cumsum(delta_s[delta_col])
+    
+    path_s["Slope"] = delta_s["Slope"]
+    
+    if bi_inital:
+        ss, ee, delta_e, time_delta_e = initialize(data, reverse=True, linear_slope=True)
+        path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e)
+        path_bi["Slope"] = delta_bi["Slope"]
+        path_bi["Speed"] = s["Speed"] + np.cumsum(delta_bi["speed"])
+        path_s = path_bi.copy()
+        delta_s = delta_bi.copy()
+    
+    
+    mid_point = s[point_attribute].copy()
+    
+    for col in point_attribute:
+        mid_point[col] = path_s[col][mid_idx]
+    
+    bi_iter = 20
+    
+    optimizer_ = optimizer(s, e, delta_s)
+    cost_ = optimizer_.cost_cal(optimizer_.DV)
+    
+    m2s = s.copy()
+    m2s["Heading"] = s["Heading"] + np.pi
+    m2s["Slope"] = - s["Slope"]
+    
+    delta_m2e = delta_s.copy()
+    for col in delta_m2e.keys():
+        delta_m2e[col] = delta_m2e[col][mid_idx:]
+
+    delta_m2s = delta_s.copy()
+    for col in delta_m2s.keys():
+        delta_m2s[col] = - delta_m2s[col][:mid_idx][::-1]
+    
+    while cost_ > 0.5:
+        
+        optimizer_m2e = optimizer(mid_point, e, delta_m2e, max_iter=bi_iter)
+        DV_m2e = optimizer_m2e.optimize()
+        
+        optimizer_m2s = optimizer(mid_point, m2s, delta_m2s, max_iter=bi_iter)
+        DV_m2s = optimizer_m2s.optimize()
+        
+        delta_m2e = DV_m2e
+        delta_m2s = DV_m2s
+        
+        new_m_e = 
+        
+        new_DV = 
+        
+        mid_point["X"] = 
+    
+    
+    return mid_point[point_attribute]
+
+print(s[["Height", "Heading", "X", "Y", "Speed", "Slope"]])
+bi_optimize(data_, bi_inital=False)
+
+
+
+
+acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
+acc_file = calibration(acc_file)
+
+result = detection(acc_file.loc[:5000])
+# #
+
+data_ = acc_file[9700:9730].copy()
+ref_cal = ["lat", "lon", "height", "headMot"]
+
+s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True)
+ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True)
+
+path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e)
+
+# optimizer_ = optimizer(s, e, delta_bi)
+# opt_result(s, e, optimizer_, data_[ref_cal])
+# optimizer_.optimize()
+# opt_result(s, e, optimizer_, data_[ref_cal])
+
+optimizer_ = optimizer(s, e, delta_bi)
+opt_result(s, e, optimizer_, data_[ref_cal])
+optimizer_.optimize()
+opt_result(s, e, optimizer_, data_[ref_cal])
