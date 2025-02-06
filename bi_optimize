@@ -2,15 +2,15 @@ def bi_optimize(data, bi_inital = True):
     mid_idx = len(data) // 2
     path_s = {}
     point_attribute = ["Height", "Heading", "X", "Y", "Speed", "Slope"]
-    
+
     s, e, delta_s, time_delta_s = initialize(data, linear_slope=True)
-    
+
     for col, delta_col in zip(["Height", "Heading", "X", "Y", "Speed", ],
                 ["height", "heading", "x", "y", "speed", ]):
         path_s[col] = s[col] + np.cumsum(delta_s[delta_col])
-    
+
     path_s["Slope"] = delta_s["Slope"]
-    
+
     if bi_inital:
         ss, ee, delta_e, time_delta_e = initialize(data, reverse=True, linear_slope=True)
         path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e)
@@ -18,22 +18,22 @@ def bi_optimize(data, bi_inital = True):
         path_bi["Speed"] = s["Speed"] + np.cumsum(delta_bi["speed"])
         path_s = path_bi.copy()
         delta_s = delta_bi.copy()
-    
-    
+
+
     mid_point = s[point_attribute].copy()
-    
+
     for col in point_attribute:
         mid_point[col] = path_s[col][mid_idx]
-    
+
     bi_iter = 20
-    
+
     optimizer_ = optimizer(s, e, delta_s)
     cost_ = optimizer_.cost_cal(optimizer_.DV)
-    
+
     m2s = s.copy()
     m2s["Heading"] = s["Heading"] + np.pi
     m2s["Slope"] = - s["Slope"]
-    
+
     delta_m2e = delta_s.copy()
     for col in delta_m2e.keys():
         delta_m2e[col] = delta_m2e[col][mid_idx:]
@@ -41,53 +41,61 @@ def bi_optimize(data, bi_inital = True):
     delta_m2s = delta_s.copy()
     for col in delta_m2s.keys():
         delta_m2s[col] = - delta_m2s[col][:mid_idx][::-1]
-    
+
     while cost_ > 0.5:
-        
         optimizer_m2e = optimizer(mid_point, e, delta_m2e, max_iter=bi_iter)
+        opt_result(mid_point, e, optimizer_m2e) #, data[mid_idx:][ref_cal]
         DV_m2e = optimizer_m2e.optimize()
-        
-        optimizer_m2s = optimizer(mid_point, m2s, delta_m2s, max_iter=bi_iter)
+
+        mid_point_ = mid_point.copy()
+        mid_point_["Heading"] = mid_point_["Heading"] + np.pi
+        mid_point_["Slope"] = - mid_point_["Slope"]
+
+        optimizer_m2s = optimizer(mid_point_, m2s, delta_m2s, max_iter=bi_iter)
+        opt_result(mid_point_, m2s, optimizer_m2s) #, data[:mid_idx][ref_cal]
         DV_m2s = optimizer_m2s.optimize()
-        
-        delta_m2e = DV_m2e
-        delta_m2s = DV_m2s
-        
-        new_m_e = 
-        
-        new_DV = 
-        
-        mid_point["X"] = 
-    
-    
-    return mid_point[point_attribute]
+        m2e_N = optimizer_m2e.N
+        m2s_N = optimizer_m2s.N
+
+        DV_m2ss = DV_m2s.copy()
+
+        for i in range(3):
+            DV_m2ss[i*m2s_N:(i+1)*m2s_N] = -DV_m2ss[i*m2s_N:(i+1)*m2s_N][::-1]
+
+        delta_m2e = {"heading": DV_m2e[:m2e_N], "Slope":DV_m2e[m2e_N:m2e_N*2], "speed":DV_m2e[m2e_N*2:m2e_N*3]}
+        delta_m2s = {"heading": DV_m2ss[:m2s_N], "Slope":DV_m2ss[m2s_N:m2s_N*2], "speed":DV_m2ss[m2s_N*2: m2s_N*3]}
+
+        delta_m2ss = delta_m2s.copy()
+        for col in delta_m2ss.keys():
+            delta_m2ss[col] = - delta_m2ss[col][:mid_idx][::-1]
+
+        new_DV = np.hstack([DV_m2ss, DV_m2e])
+        cost_ = optimizer_.cost_cal(new_DV)
+
+        m2e_speed = mid_point["Speed"] + np.cumsum(DV_m2e[optimizer_m2e.N * 2:optimizer_m2e.N * 3])
+        m2e_heading = mid_point["Heading"] + np.cumsum(DV_m2e[optimizer_m2e.N * 0:optimizer_m2e.N * 1])
+
+        new_m2e_X = (e["X"] - np.cumsum( m2e_speed * np.sin(m2e_heading)))[-2:][::-1]
+        new_m2e_Y = (e["Y"] - np.cumsum( m2e_speed * np.cos(m2e_heading)))[-2:][::-1]
+        new_m2e_H = (e["Height"] - np.cumsum( m2e_speed * np.tan(DV_m2e[optimizer_m2e.N * 1:optimizer_m2e.N * 2])))[:-2][::-1]
+
+        m2s_speed = mid_point["Speed"] + np.cumsum(DV_m2ss[optimizer_m2s.N * 2:optimizer_m2s.N * 3])
+        m2s_heading = mid_point["Heading"] + np.cumsum(DV_m2ss[optimizer_m2s.N * 0:optimizer_m2s.N * 1])
+
+        new_m2s_X = (s["X"] + np.cumsum( m2s_speed * np.sin(m2s_heading)))[-2:]
+        new_m2s_Y = (s["Y"] + np.cumsum( m2s_speed * np.cos(m2s_heading)))[-2:]
+        new_m2s_H = (s["Height"] + np.cumsum( m2s_speed * np.tan(DV_m2ss[optimizer_m2s.N * 1:optimizer_m2s.N * 2])))[-2:]
+
+        mid_point["X"] = (new_m2s_X[1] + new_m2e_X[0]) / 2
+        mid_point["Y"] = (new_m2s_Y[1] + new_m2e_Y[0]) / 2
+        mid_point["Height"] = (new_m2s_H[1] + new_m2e_H[0]) / 2
+
+        # mid_point["Speed"] = (np.sqrt((np.diff(new_m2e_X)[0])**2 + (np.diff(new_m2e_Y)[0])**2) + np.sqrt((np.diff(new_m2s_X)[0])**2 + (np.diff(new_m2s_Y)[0])**2))/2
+        # mid_point["Slope"] = (np.arctan(np.diff(new_m2e_H)[0]/mid_point["Speed"]) + np.arctan(np.diff(new_m2s_H)[0]/mid_point["Speed"]))/2
+
+    return new_DV
 
 print(s[["Height", "Heading", "X", "Y", "Speed", "Slope"]])
-bi_optimize(data_, bi_inital=False)
+bi_optimize(data_, bi_inital=True)
 
 
-
-
-acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
-acc_file = calibration(acc_file)
-
-result = detection(acc_file.loc[:5000])
-# #
-
-data_ = acc_file[9700:9730].copy()
-ref_cal = ["lat", "lon", "height", "headMot"]
-
-s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True)
-ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True)
-
-path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e)
-
-# optimizer_ = optimizer(s, e, delta_bi)
-# opt_result(s, e, optimizer_, data_[ref_cal])
-# optimizer_.optimize()
-# opt_result(s, e, optimizer_, data_[ref_cal])
-
-optimizer_ = optimizer(s, e, delta_bi)
-opt_result(s, e, optimizer_, data_[ref_cal])
-optimizer_.optimize()
-opt_result(s, e, optimizer_, data_[ref_cal])
