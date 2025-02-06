@@ -1,23 +1,25 @@
 
 class optimizer():
-    def __init__(self, s, e, delta, time_delta = None, epsilon = 1e-3, max_iter = 100):
+    def __init__(self, s, e, delta, time_delta = None, epsilon = 1e-3, max_iter = 30):
         
         self.s = s
+        print(self.s)
         self.e = e
         self.e_true = np.array([
         (self.e["Heading"]) , #% (2 * np.pi)
         self.e["Speed"],
         self.e["Height"],
-        self.e["Radius"]
+        self.e["X"],
+        self.e["Y"]
         ])
         
         self.m = int(len(delta["heading"]) * 6)
         self.N = int(self.m // 6)
         self.mu = 10 * np.ones(self.m)
         self.epsilon = epsilon
-        self.max_iter = 100
-        self.weight = np.array([5 * 1e-3, 5*1e2, 5, 3]) # heading, speed, height, radius
-        self.min_turn_R = 8
+        self.max_iter = max_iter
+        self.weight = np.array([5*1e-2, 3, 10, 5, 5]) # heading, speed, height, X, Y
+        self.min_turn_R = 10
         
         self.DV = np.vstack([delta["heading"].reshape(-1, 1), delta["Slope"].reshape(-1, 1), delta["speed"].reshape(-1, 1)]).flatten()
         self.org_slope = delta["Slope"].reshape(-1, 1)
@@ -37,8 +39,8 @@ class optimizer():
         M = np.block([
         [  Z,   I,   Z ],
         [ -Z,   I,   Z ],
-        [  I,   Z,  -L/R ],
-        [  I,  -Z,  -L/R ],
+        [  R*I,   Z,  -L ],
+        [  R*I,  -Z,  -L ],
         [  Z,   Z,   I ],
         [  Z,   Z,  -I ]
         ])
@@ -54,26 +56,67 @@ class optimizer():
         dv_speed = DV[2*self.N:3*self.N]
         
         # 예측된 최종 값 계산
-        Heading_pred = (self.s["Heading"] + np.sum(dv_heading)) #% (2 * np.pi)
+        Heading_cum = (self.s["Heading"] + np.cumsum(dv_heading)) #% (2 * np.pi)
         Speed_cum = self.s["Speed"] + np.cumsum(dv_speed)
         Speed_pred = Speed_cum[-1]
         Height_pred = self.s["Height"] + np.sum(Speed_cum * np.tan(dv_slope))
         
-        Radius_pred = 0.0 + np.sum(Speed_cum * np.cos(dv_heading))
+        X_pred = self.s["X"] + np.sum(Speed_cum * np.sin(Heading_cum))
+        Y_pred = self.s["Y"] + np.sum(Speed_cum * np.cos(Heading_cum))
+        R_pred = np.sqrt(X_pred ** 2 + Y_pred ** 2)
         
-        e_estimate = np.array([Heading_pred, Speed_pred, Height_pred, Radius_pred])
-        e_true = self.e_true #- np.array([dv_heading[-1], dv_speed[-1], Speed_pred * np.tan(dv_slope[-1]), Speed_pred * np.cos(dv_heading[-1]) ])
+        def azimuth(X_pred, Y_pred):
+            azimuth = np.arctan(X_pred/Y_pred)
+            if azimuth < 0 :
+                azimuth += np.pi
+                
+            if X_pred < 0 :
+                azimuth += np.pi
+            
+            return azimuth
         
-        # 각 요소별 residual을 weight로 스케일 조정
-        residual_ = (e_true - e_estimate) / self.weight
-        cost_primary = 0.5 * np.sum(residual_**2)
+        azimuth_pred = azimuth(X_pred, Y_pred)
         
+        #print(X_pred, Y_pred, azimuth_pred)
+        
+        e_true = self.e_true
+        
+        error_heading = np.cos(e_true[0])  - np.cos(Heading_cum[-1]) #% (2*np.pi)
+        error_speed   = e_true[1] - Speed_pred
+        error_height  = e_true[2] - Height_pred
+        error_X  = e_true[3] - X_pred
+        error_Y = e_true[4] - Y_pred
+        
+        e_azimuth = azimuth(e_true[3], e_true[4])
+        error_azimuth =  np.cos(e_azimuth) - np.cos(azimuth_pred)
+        error_R = np.sqrt(e_true[3]**2 + e_true[4]**2) - R_pred
+        
+        #print(e_true[3], e_true[4], e_azimuth)
+        
+        #print(error_heading, error_speed, error_height, error_X, error_Y, error_azimuth, error_R)
+        
+        w_heading, w_speed, w_height, w_x, w_y = self.weight
+        
+        cost_RH = 0.5 * ((error_heading / w_heading)**2 + (error_X/w_x)**2 + (error_Y/w_y)**2 ) #
+        cost_SH = 0.5 * ((error_height / w_height)**2 + (error_speed /w_speed)**2 ) # 
+        
+        error_RH_norm = np.sqrt(error_heading**2 + (error_X)**2 + (error_Y)**2)
+        
+        delta_thresh = 1
+        gamma = 3
+        
+        if error_RH_norm > delta_thresh:
+            adaptive_factor = 1.0 + gamma * (error_RH_norm - delta_thresh)
+        else:
+            adaptive_factor = 1.0
+            
         lambda_slope = 1.0
         cost_slope = 0.5 * lambda_slope * np.sum((dv_slope - self.org_slope.flatten())**2) / self.N
+
+        total_cost = adaptive_factor * cost_RH + cost_SH + cost_slope
+    
         
-        cost = cost_primary + cost_slope
-        
-        return cost
+        return total_cost
     
     def constraint_cal(self, DV, R = 8, slope_ths = 0.1, acc_ths = 3):
         """
@@ -84,7 +127,7 @@ class optimizer():
         speed = DV[2*self.N : 3 * self.N]
         Speed = self.s["Speed"] + np.cumsum(speed)
         
-        # 위에서 8m로 지정
+        # 위에서 10m로 지정
         R = self.min_turn_R
         
         Slope_cst = np.vstack([
@@ -93,8 +136,8 @@ class optimizer():
         ])
         
         heading_cst = np.vstack([
-            (heading - Speed*self.time_delta /R).flatten(),
-            (-heading - Speed* self.time_delta /R).flatten()
+            (R * heading *self.time_delta - Speed).flatten(),
+            (-R * heading *self.time_delta - Speed).flatten()
         ])
         
         speed_cst = np.vstack([
@@ -103,7 +146,7 @@ class optimizer():
         ])
         
         return np.vstack([
-          heading_cst, Slope_cst, speed_cst
+          Slope_cst, heading_cst, speed_cst
         ]).flatten()
     
     def hessian_cal(self, DV = None, epsilon=1e-6):
@@ -256,7 +299,7 @@ class optimizer():
     def optimize(self):
         iter_ = 0
         
-        while iter_ <= self.max_iter:
+        while iter_ <= self.max_iter: #
             
             residuals_, jacobian, hessian, g = self.compute_residuals(self.DV)
             dual_norm = np.linalg.norm(residuals_[:self.N * 3])
@@ -289,16 +332,19 @@ def opt_result(s, e, optimizer_, ref_GPS = None):
     heading = new_DV[:optimizer_.N]
     Slope = new_DV[1 * optimizer_.N:2 * optimizer_.N]
     speed = new_DV[2 * optimizer_.N:3 * optimizer_.N]
+    Heading = s["Heading"] + np.cumsum(heading)
     Speed = s["Speed"] + np.cumsum(speed)
     height = Speed * np.tan(Slope)
-    radius = Speed * np.cos(heading)
+    x = Speed * np.sin(Heading)
+    y = Speed * np.cos(Heading)
 
     delta_opt = {
         "heading" : heading,
         "Slope" : Slope,
         "speed" : speed,
         "height" : height,
-        "radius" : radius
+        "x" : x,
+        "y" : y
     }
     
     if ref_GPS is None:
