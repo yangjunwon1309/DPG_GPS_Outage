@@ -99,3 +99,33 @@ print(s[["Height", "Heading", "X", "Y", "Speed", "Slope"]])
 bi_optimize(data_, bi_inital=True)
 
 
+acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
+acc_file = calibration(acc_file)
+
+result = detection(acc_file.loc[:15000])
+# #
+
+data_ = acc_file[2530:2550].copy()
+ref_cal = ["lat", "lon", "height", "headMot", "Speed", "numSV"]
+
+for outage_file in [data_]:
+    #display(outage_file.describe(include="all"))
+    fig = px.scatter_mapbox(outage_file, lat = f'lat', lon= f'lon', color= f"height", zoom=15, mapbox_style='open-street-map', color_continuous_scale='turbo').update_traces(marker={'size':5})
+    fig.update_layout(
+        width = 1200,
+        height = 900,
+        margin = dict(l=0, r=0, t=0, b=0),
+    )
+    fig.show()
+    
+s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True)
+ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True)
+
+visuallize(s, e, delta_s, data_[ref_cal])
+
+path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e, alpha = 4)
+
+optimizer_ = optimizer(s, e, delta_bi, max_iter=50)
+opt_result(s, e, optimizer_, data_[ref_cal])
+optimizer_.optimize()
+opt_result(s, e, optimizer_, data_[ref_cal])
