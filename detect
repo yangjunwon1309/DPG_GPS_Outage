@@ -2,6 +2,8 @@ import warnings
 warnings.filterwarnings("ignore", message="'DataFrame.swapaxes' is deprecated")
 
 def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
+    data = data.fillna(0)
+    
     data_outage = data.loc[data["numSV"] == 0]
 
     def group_consecutive(data):
@@ -24,7 +26,8 @@ def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
     # 여기에서 시작 끝 점 기준으로 특정 인덱스 범위만큼 더 간 값들까지 붙여서 반환
 
     for idx, outage_section in enumerate(data_outage_split):
-
+        outage_section = outage_section.fillna(0)
+        
         s_i, o_i = outage_section.index[0], outage_section.index[-1]
         print(s_i, o_i)
 
@@ -43,17 +46,26 @@ def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
             o_o = o_i + 5
 
         not_sat_s = True
+        not_parking = True
+    
+        
         while not_sat_s:
+            if o_o - s_o > 80:
+                print("regard as parking")
+                not_parking = False
+                break
+            
             if (data.loc[s_o]["numSV"] > numSV_ths) and (data.loc[o_o]["numSV"] > numSV_ths):
                 not_sat_s = False
-            else:
-                if (data.loc[s_o]["numSV"] <= numSV_ths) :
-                    s_o = s_o - 1
-                if (data.loc[o_o]["numSV"] <= numSV_ths):
-                    o_o = o_o + 1
-
-
-        outage_section_fin = pd.concat([data.loc[s_o:s_i], outage_section, data.loc[o_i + 1: o_o + 1]], axis = 0)
+                
+            if (data.loc[s_o]["numSV"] <= numSV_ths) or pd.isna(data.loc[s_o, "numSV"]):
+                s_o = s_o - 1
+            if (data.loc[o_o]["numSV"] <= numSV_ths):
+                o_o = o_o + 1
+            
+                
+            
+        outage_section_fin = pd.concat([data.loc[s_o-1:s_i-1], outage_section, data.loc[o_i + 1: o_o + 1]], axis = 0)
 
         outage_section_fin["TimeStamp"] = pd.to_datetime(outage_section_fin["datetime"], format="%Y-%m-%d %H:%M:%S")
         outage_section_fin["UnixTime"] = outage_section_fin["TimeStamp"].apply(lambda x: x.timestamp())
@@ -61,8 +73,11 @@ def detection(data, s_dist=200, e_dist = 150, numSV_ths = 10):
         # time_delta = np.insert(time_delta, 0, time_delta[0])
 
         outage_section_fin = outage_section_fin.loc[outage_section_fin["UnixTime"].diff()> 0]
-
-        data_outage_split[idx] = outage_section_fin#.drop(columns=["UnixTime"])
+        
+        if not_parking:
+            data_outage_split[idx] = outage_section_fin #.drop(columns=["UnixTime"])
+        else:
+            data_outage_split[idx] = "parking"
 
     return data_outage_split
 
@@ -71,14 +86,14 @@ pio.renderers.default = "browser"
 acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
 acc_file = calibration(acc_file)
 
-result = detection(acc_file.loc[:5000])
+result = detection(acc_file.loc[14800:15000])
 
-for outage_file in result:
-    #display(outage_file.describe(include="all"))
-    fig = px.scatter_mapbox(outage_file, lat = f'lat', lon= f'lon', color= f"UnixTime", zoom=15, mapbox_style='open-street-map', color_continuous_scale='turbo').update_traces(marker={'size':5})
-    fig.update_layout(
-        width = 1200,
-        height = 900,
-        margin = dict(l=0, r=0, t=0, b=0),
-    )
-    fig.show()
+# for outage_file in result:
+#     #display(outage_file.describe(include="all"))
+#     fig = px.scatter_mapbox(outage_file, lat = f'lat', lon= f'lon', color= f"UnixTime", zoom=15, mapbox_style='open-street-map', color_continuous_scale='turbo').update_traces(marker={'size':5})
+#     fig.update_layout(
+#         width = 1200,
+#         height = 900,
+#         margin = dict(l=0, r=0, t=0, b=0),
+#     )
+#     fig.show()
