@@ -63,21 +63,6 @@ class optimizer():
         
         X_pred = self.s["X"] + np.sum(Speed_cum * np.sin(Heading_cum))
         Y_pred = self.s["Y"] + np.sum(Speed_cum * np.cos(Heading_cum))
-        R_pred = np.sqrt(X_pred ** 2 + Y_pred ** 2)
-        
-        def azimuth(X_pred, Y_pred):
-            azimuth = np.arctan(X_pred/Y_pred)
-            if azimuth < 0 :
-                azimuth += np.pi
-                
-            if X_pred < 0 :
-                azimuth += np.pi
-            
-            return azimuth
-        
-        azimuth_pred = azimuth(X_pred, Y_pred)
-        
-        #print(X_pred, Y_pred, azimuth_pred)
         
         e_true = self.e_true
         
@@ -87,13 +72,6 @@ class optimizer():
         error_X  = e_true[3] - X_pred
         error_Y = e_true[4] - Y_pred
         
-        e_azimuth = azimuth(e_true[3], e_true[4])
-        error_azimuth =  np.cos(e_azimuth) - np.cos(azimuth_pred)
-        error_R = np.sqrt(e_true[3]**2 + e_true[4]**2) - R_pred
-        
-        #print(e_true[3], e_true[4], e_azimuth)
-        
-        #print(error_heading, error_speed, error_height, error_X, error_Y, error_azimuth, error_R)
         
         w_heading, w_speed, w_height, w_x, w_y = self.weight
         
@@ -276,6 +254,7 @@ class optimizer():
                 constraint_match = True
             else : 
                 theta_ *= beta
+        #print("const match done")
         
         residuals_match = False
         org_cost = self.cost_cal(self.DV)
@@ -285,14 +264,12 @@ class optimizer():
             new_cost = self.cost_cal(new_DV)    
             # residuals_update, jacobian, hessian, g = self.compute_residuals()
             
-            # 그냥 residual 말고 cost 기준으로 optimzie?
-            # step 고르는 것에서 시간 엄청 소요 됨
             
             if new_cost <= (1 - alpha * theta_) * org_cost :  #np.linalg.norm(residuals)
                 residuals_match = True
             else:
                 theta_ *= beta
-        
+        #print("res match done")
         print(theta_)
         return theta_ #* (0.9 ** 10)
     
