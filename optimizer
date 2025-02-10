@@ -91,7 +91,7 @@ class optimizer():
         lambda_slope = 1.0
         cost_slope = 0.5 * lambda_slope * np.sum((dv_slope - self.org_slope.flatten())**2) / self.N
 
-        total_cost = adaptive_factor * cost_RH + cost_SH + cost_slope
+        total_cost =  cost_RH + cost_SH #+ cost_slope adaptive_factor *
     
         
         return total_cost
