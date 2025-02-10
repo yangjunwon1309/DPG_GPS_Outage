@@ -290,6 +290,7 @@ def visuallize(s, e, delta_p, ref_GPS = None):
         ref_radius = np.array([r_cal[1] for r_cal in r_cal_])
         ref_height = np.array(ref_GPS["height"])
         ref_speed = np.array(ref_GPS["Speed"])
+        ref_heading = np.array(ref_GPS["headMot"])
         ref_x = ref_radius * np.sin(ref_theta)
         ref_y = ref_radius * np.cos(ref_theta)
         ref_z = ref_height
@@ -320,23 +321,28 @@ def visuallize(s, e, delta_p, ref_GPS = None):
         y_diff = np.sqrt((ref_y[1:][normal_idx] - y[normal_idx])**2)
         z_diff = np.sqrt((ref_z[1:][normal_idx] - z[normal_idx])**2)
         speed_diff = np.sqrt((ref_speed[1:][normal_idx] - speed[normal_idx])**2)
-        head_diff = np.sqrt(((ref_theta[1:] - head) % (2*np.pi))** 2)
-        head_diff = (head_diff + np.pi) % (2 * np.pi) - np.pi 
+        # display(ref_heading)
+        # display(head)
+        head_diff = np.sqrt(((ref_heading[1:] - head) % (2*np.pi))** 2)
+        head_diff = np.abs((head_diff + np.pi) % (2 * np.pi) - np.pi )
         
         x_diff = x_diff[~np.isnan(x_diff)]
         y_diff = y_diff[~np.isnan(y_diff)]
+        r_diff = np.sqrt(x_diff**2 + y_diff**2)
         z_diff = z_diff[~np.isnan(z_diff)]
         head_diff = head_diff[~np.isnan(head_diff)]
         speed_diff = speed_diff[~np.isnan(speed_diff)]
         
         print(f"x diff as {x_diff}")
         print(f"y diff as {y_diff}")
+        print(f"r diff as {r_diff}")
         print(f"h diff as {z_diff}")
         print(f"speed diff as {speed_diff}")
         print(f"head diff as {head_diff}")
         
         print(f"avg x diff as {np.mean(x_diff)} m")
         print(f"avg y diff as {np.mean(y_diff)} m")
+        print(f"avg r diff as {np.mean(r_diff)} m")
         print(f"avg h diff as {np.mean(z_diff)} m")
         print(f"avg speed diff as {np.mean(speed_diff)} m/s")
         print(f"avg heading diff as {np.mean(head_diff)} rad")
@@ -418,3 +424,98 @@ path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e, al
 visuallize(s, e, delta_s, data_[["lat", "lon", "headMot", "height", "Speed", "numSV"]])
 visuallize(s, e, delta_e_s, data_[["lat", "lon", "headMot", "height", "Speed","numSV"]])
 visuallize(s, e, delta_bi, data_[["lat", "lon", "headMot", "height", "Speed","numSV"]])
+
+import numpy as np
+
+# 지구 타원체 파라미터 (WGS84)
+a = 6378137.0               # semi-major axis (m)
+e2 = 6.69437999014e-3        # eccentricity squared
+
+def geodetic_to_ecef(lat, lon, h):
+    """
+    지리 좌표 (lat, lon, h)를 ECEF 좌표 (x, y, z)로 변환 (WGS84 기준)
+    lat, lon: degree 단위
+    h: 고도 (m)
+    """
+    lat_rad = np.radians(lat)
+    lon_rad = np.radians(lon)
+    N = a / np.sqrt(1 - e2 * np.sin(lat_rad)**2)
+    x = (N + h) * np.cos(lat_rad) * np.cos(lon_rad)
+    y = (N + h) * np.cos(lat_rad) * np.sin(lon_rad)
+    z = ((1 - e2) * N + h) * np.sin(lat_rad)
+    return np.array([x, y, z])
+
+def ecef_to_geodetic(x, y, z):
+    """
+    ECEF 좌표 (x, y, z)를 지리 좌표 (lat, lon, h)로 변환 (WGS84 기준)
+    반환: (lat, lon, h) [lat, lon in degrees, h in meters]
+    """
+    b = a * np.sqrt(1 - e2)
+    ep = np.sqrt((a**2 - b**2)/b**2)
+    p = np.sqrt(x**2 + y**2)
+    th = np.arctan2(a * z, b * p)
+    lon = np.arctan2(y, x)
+    lat = np.arctan2(z + ep**2 * b * np.sin(th)**3, p - e2 * a * np.cos(th)**3)
+    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+    h = p / np.cos(lat) - N
+    return np.degrees(lat), np.degrees(lon), h
+
+def enu_to_ecef(e, n, u, ref_lat, ref_lon, ref_h):
+    """
+    ENU 좌표 (e, n, u)를 ECEF 좌표로 변환.
+    ref_lat, ref_lon, ref_h: 기준점의 지리 좌표 (degree, degree, m)
+    """
+    # 기준점의 ECEF 좌표
+    ref_ecef = geodetic_to_ecef(ref_lat, ref_lon, ref_h)
+    # 기준점의 위도/경도를 radian으로
+    lat0 = np.radians(ref_lat)
+    lon0 = np.radians(ref_lon)
+    # ENU -> ECEF 회전 행렬 (East, North, Up 순)
+    R = np.array([[-np.sin(lon0),              np.cos(lon0),             0],
+                  [-np.sin(lat0)*np.cos(lon0), -np.sin(lat0)*np.sin(lon0),  np.cos(lat0)],
+                  [ np.cos(lat0)*np.cos(lon0),  np.cos(lat0)*np.sin(lon0),  np.sin(lat0)]])
+    enu = np.array([e, n, u])
+    # ECEF 좌표: 기준점 + 회전 행렬의 전치 * enu 벡터
+    ecef = ref_ecef + R.T.dot(enu)
+    return ecef
+
+def local_path_to_geodetic(x, y, h, ref):
+    """
+    로컬 좌표계 (x, y, h)로 구성된 경로를 지리 좌표 (lat, lon, h)로 변환.
+    ref: 기준점 사전 (예: {"lat": ..., "lon": ..., "h": ...})
+         이 기준점은 로컬 좌표계의 원점으로 가정.
+    
+    x, y, h: 각각 N개의 점으로 구성된 배열 (예: np.array)
+    반환: (lat, lon, h) 좌표 배열 (N x 3)
+    """
+    ref_lat = ref["lat"]
+    ref_lon = ref["lon"]
+    ref_h = ref["h"]
+    
+    geodetic_points = []
+    for xi, yi, hi in zip(x, y, h):
+        # 여기서 x는 동쪽(East), y는 북쪽(North)으로 가정
+        ecef = enu_to_ecef(xi, yi, hi, ref_lat, ref_lon, ref_h)
+        lat, lon, alt = ecef_to_geodetic(ecef[0], ecef[1], ecef[2])
+        geodetic_points.append([lat, lon, alt])
+    
+    return np.array(geodetic_points)
+
+# 예시 사용:
+if __name__ == '__main__':
+    # 기준점: 시작점의 geodetic 좌표 (예: 서울 시청)
+    ref = {"lat": 37.5665, "lon": 126.9780, "h": 0.0}
+    
+    # 예시 로컬 경로 (x, y, h) -- 단위: 미터
+    # 예를 들어, x는 동쪽, y는 북쪽, h는 고도 변화
+    N = 10
+    # 간단한 직선 경로 예: x는 0에서 100 m, y는 0에서 50 m, h는 0에서 10 m 변화
+    x = np.linspace(0, 100, N)
+    y = np.linspace(0, 50, N)
+    h = np.linspace(0, 10, N)
+    
+    geodetic_path = local_path_to_geodetic(x, y, h, ref)
+    
+    # 결과 출력: 각 점의 (lat, lon, h)
+    for pt in geodetic_path:
+        print("Lat: {:.6f}, Lon: {:.6f}, h: {:.2f}".format(pt[0], pt[1], pt[2]))
