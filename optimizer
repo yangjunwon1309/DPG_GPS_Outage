@@ -22,7 +22,9 @@ class optimizer():
         self.min_turn_R = 10
         
         self.DV = np.vstack([delta["heading"].reshape(-1, 1), delta["Slope"].reshape(-1, 1), delta["speed"].reshape(-1, 1)]).flatten()
-        self.org_slope = delta["Slope"].reshape(-1, 1)
+        self.org_slope = delta["Slope"].reshape(-1, 1).flatten()
+        self.org_heading = delta["heading"].reshape(1, -1).flatten()
+        
         if time_delta is None:
             self.time_delta = np.ones(self.N)
         else:
@@ -34,15 +36,17 @@ class optimizer():
     def grad_g(self, N):
         I = np.eye(N)
         Z = np.zeros((N, N))
-        L = np.tril(np.ones((N, N)))
+        Z_s = Z[1:, :]
+        I_s = np.vstack([np.zeros((1, N)), I[1:, :]])
+        L = np.vstack([np.zeros((1, N)), np.tril(np.ones((N, N)))[1:, :]])
         R = self.min_turn_R
         M = np.block([
         [  Z,   I,   Z ],
         [ -Z,   I,   Z ],
-        [  R*I,   Z,  -L ],
-        [  R*I,  -Z,  -L ],
-        [  Z,   Z,   I ],
-        [  Z,   Z,  -I ]
+        [  R*I_s,   Z,  -L ],
+        [  R*I_s,  -Z,  -L ],
+        [  Z,   Z,   I_s ],
+        [  Z,   Z,  -I_s ]
         ])
         
         return M
@@ -91,12 +95,12 @@ class optimizer():
         lambda_slope = 1.0
         cost_slope = 0.5 * lambda_slope * np.sum((dv_slope - self.org_slope.flatten())**2) / self.N
 
-        total_cost =  cost_RH + cost_SH #+ cost_slope adaptive_factor *
+        total_cost =  adaptive_factor * cost_RH + cost_SH #+ cost_slope 
     
         
         return total_cost
     
-    def constraint_cal(self, DV, R = 8, slope_ths = 0.1, acc_ths = 3):
+    def constraint_cal(self, DV, R = 11, slope_ths = 0.1, acc_ths = 3):
         """
         제약조건 식 계산하기, 6N x 1
         """
@@ -114,13 +118,13 @@ class optimizer():
         ])
         
         heading_cst = np.vstack([
-            (R * heading *self.time_delta - Speed).flatten(),
-            (-R * heading *self.time_delta - Speed).flatten()
+            np.insert((R * np.dot((heading - self.org_heading), self.time_delta) - Speed)[1:], 0, 0).flatten(),
+            np.insert((R * np.dot((-heading + self.org_heading), self.time_delta) - Speed)[1:], 0, 0).flatten()
         ])
         
         speed_cst = np.vstack([
-            (speed - acc_ths).flatten(),
-            (-speed - acc_ths).flatten()
+            (np.insert(speed[1:] - acc_ths, 0, 0)).flatten(),
+            (np.insert(-speed[1:] - acc_ths, 0, 0)).flatten()
         ])
         
         return np.vstack([
@@ -250,7 +254,7 @@ class optimizer():
         constraint_match = False
         
         while not constraint_match:
-            if np.all(self.constraint_cal(self.DV + theta_ * delta_DV) < 0) :
+            if np.all(self.constraint_cal(self.DV + theta_ * delta_DV) <= 0) :
                 constraint_match = True
             else : 
                 theta_ *= beta
