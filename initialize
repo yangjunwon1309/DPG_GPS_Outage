@@ -346,7 +346,23 @@ def visuallize(s, e, delta_p, ref_GPS = None):
         print(f"avg h diff as {np.mean(z_diff)} m")
         print(f"avg speed diff as {np.mean(speed_diff)} m/s")
         print(f"avg heading diff as {np.mean(head_diff)} rad")
-
+        
+        # DSN, mileage, 경사도 비율 (?)
+        
+        mileage_ref = np.sum(ref_speed[1:][normal_idx])
+        mileage_opt = np.sum(speed[normal_idx])
+        
+        print(f"mileage) ref: {mileage_ref}, opt: {mileage_opt}, error: {(mileage_ref - mileage_opt)*100/mileage_ref} %")
+        
+        if ("AccelX" in ref_GPS.columns) :
+            DSNX_ref = np.sum(ref_GPS["AccelX"]**2) / mileage_ref
+            DSNX_opt = np.sum(ref_GPS["AccelX"]**2) / mileage_opt
+            
+            DSNY_ref = np.sum(ref_GPS["AccelY"][1:]**2) / mileage_ref
+            DSNY_opt = np.sum(ref_GPS["AccelY"][1:]**2) / mileage_opt
+            
+            print(f"DSNX) ref: {DSNX_ref}, opt: {DSNX_opt}, error: {(DSNX_ref - DSNX_opt)*100/DSNX_ref} %")
+            print(f"DSNY) ref: {DSNY_ref}, opt: {DSNY_opt}, error: {(DSNY_ref - DSNY_opt)*100/DSNY_ref} %")
 
     s_x, s_y = s["X"], s["Y"]
     e_x, e_y = e["X"], e["Y"]
@@ -421,9 +437,9 @@ ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=Tru
 
 path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e, alpha=4)
 
-visuallize(s, e, delta_s, data_[["lat", "lon", "headMot", "height", "Speed", "numSV"]])
-visuallize(s, e, delta_e_s, data_[["lat", "lon", "headMot", "height", "Speed","numSV"]])
-visuallize(s, e, delta_bi, data_[["lat", "lon", "headMot", "height", "Speed","numSV"]])
+visuallize(s, e, delta_s, data_[["lat", "lon", "headMot", "height", "Speed", "numSV", "AccelX", "AccelY"]])
+visuallize(s, e, delta_e_s, data_[["lat", "lon", "headMot", "height", "Speed","numSV", "AccelX", "AccelY"]])
+visuallize(s, e, delta_bi, data_[["lat", "lon", "headMot", "height", "Speed","numSV", "AccelX", "AccelY"]])
 
 import numpy as np
 
@@ -508,7 +524,7 @@ if __name__ == '__main__':
     
     # 예시 로컬 경로 (x, y, h) -- 단위: 미터
     # 예를 들어, x는 동쪽, y는 북쪽, h는 고도 변화
-    N = 10
+    N = 1
     # 간단한 직선 경로 예: x는 0에서 100 m, y는 0에서 50 m, h는 0에서 10 m 변화
     x = np.linspace(0, 100, N)
     y = np.linspace(0, 50, N)
