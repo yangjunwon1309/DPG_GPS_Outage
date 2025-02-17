@@ -1,9 +1,12 @@
 from pyproj import Geod
 
 # 이미 calibration 된 데이터에서 initailize한 한부분을 df로 받음
-def initialize(df, linear_slope=True, reverse = False):
-
-    df["TimeStamp"] = pd.to_datetime(df["datetime"], format="%Y-%m-%d %H:%M:%S")
+def initialize(df, linear_slope=True, reverse = False, k = 1):
+    try:
+        df["TimeStamp"] = pd.to_datetime(df["datetime"], format="%Y-%m-%d %H:%M:%S")
+    except:
+        df["TimeStamp"] = pd.to_datetime(df["datetime"], format="%H:%M:%S")
+        
     df["UnixTime"] = df["TimeStamp"].apply(lambda x: x.timestamp())
 
     data = np.array([tuple(x) for x in np.vstack( \
@@ -82,8 +85,9 @@ def initialize(df, linear_slope=True, reverse = False):
     end_point["Y"] =  distance * np.cos(azimuth_rad)
     
     # initialize 하기 전에 각속도는 일단 MA 쳐야함. 마지막의 None 값은 data의 값 그대로 사용
-    window_size_yaw = 1
+    window_size_yaw = 5
     window_size_pitch = 10
+    window_size_accel = 1
     
     def ma_concat(data, ma, window_size):
         data_MA = np.full(len(data), np.nan)
@@ -96,37 +100,46 @@ def initialize(df, linear_slope=True, reverse = False):
     
     # Heading diff = - Yaw Rate, window 1로 그대로 사용
     Yaw_MA = -np.roll(df["AngleRateZ"].rolling(window_size_yaw).mean(), -window_size_yaw).copy()
+    Yaw_MA = ma_concat(data["AngleRateZ"], Yaw_MA, window_size_yaw)[:-1]
+    
     # Slope ~ Pitch Rate
     Pitch_MA = np.roll(df["AngleRateY"].rolling(window_size_pitch).mean(), -window_size_pitch).copy() / window_size_pitch
-
-    Yaw_MA = ma_concat(data["AngleRateZ"], Yaw_MA, window_size_yaw)[:-1]
     Pitch_MA = ma_concat(data["AngleRateY"], Pitch_MA, window_size_pitch)[:-1]
-    Accx_MA = data["AccelX"].copy()[:-1]
-
+    
+    Accx_MA = np.roll(df["AccelX"].rolling(window_size_accel).mean(), -window_size_accel).copy()
+    Accx_MA = ma_concat(data["AccelX"], Accx_MA, window_size_accel)[:-1]
+    
+    Accy_MA = np.roll(df["AccelY"].rolling(window_size_accel).mean(), -window_size_accel).copy()
+    Accy_MA = ma_concat(data["AccelY"], Accy_MA, window_size_accel)[:-1]
+    
     if reverse:
         start_point, end_point = end_point.copy(), start_point.copy()
-
-        # radius 축을 North로 잡으면 theta 둘 필요 없음. 사용하고 있지 않기도 함.
-        # start_point["X"] = 0
-        # end_point["X"] = distance
-        # start_point["Y"] = 0
-        # end_point["Y"] =  - (end_point["Heading"] - start_point["Heading"])
 
         for point in [start_point, end_point]:
             point["Heading"] = point["Heading"] + np.pi
             point["Slope"] = - point["Slope"]
-
-        Yaw_MA = np.flip(Yaw_MA)
+            
+        Yaw_MA = -np.roll(np.flip(df["AngleRateZ"]).rolling(window_size_yaw).mean(), -window_size_yaw).copy()
+        Yaw_MA = ma_concat(np.flip(df["AngleRateZ"]), Yaw_MA, window_size_yaw)[:-1]
+        # Yaw_MA = np.flip(Yaw_MA)
         Pitch_MA = np.flip(Pitch_MA)
         Accx_MA = np.flip(Accx_MA)
+        Accy_MA = np.flip(Accy_MA)
         time_delta = np.flip(time_delta)
 
-    def init_heading(heading_array, Yaw_MA, time_delta):
-        heading_array[:] = Yaw_MA/80 * time_delta
+    def init_heading(heading_array, Yaw_MA, time_delta, k = 80):
+        heading_array[:] = Yaw_MA/k * time_delta
         if reverse:
-            heading_array[:] = - Yaw_MA/80 * time_delta
+            heading_array[:] = - Yaw_MA/k * time_delta
         return heading_array
 
+    def init_heading_by_accy(heading_array, Accy_MA, speed_array, time_delta, k = 1):
+        Speed_array = start_point["Speed"] + np.cumsum(speed_array)
+        heading_array[:] = - Accy_MA * time_delta / (k * Speed_array)
+        if reverse:
+            heading_array[:] = - heading_array
+        return heading_array
+    
     def init_slope(slope_array, Pitch_MA, time_delta):
         """
         pitch rate로는 slope 를 파악하기 어려워 해당 함수 사용안함
@@ -168,7 +181,7 @@ def initialize(df, linear_slope=True, reverse = False):
         return sum_array[idx]
     
     
-    delta_p["heading"] = init_heading(delta_p["heading"], Yaw_MA, time_delta)
+    #delta_p["heading"] = init_heading(delta_p["heading"], Yaw_MA, time_delta, k)
 
      # 단순 끝점 간 고도 차로 linear 하게 초기 slope 생성, delta slope는 전부 0으로 초기화. slope_s를 해당 slope 값으로 설정
     if linear_slope == True:
@@ -176,6 +189,7 @@ def initialize(df, linear_slope=True, reverse = False):
     else:
         delta_p["Slope"] = init_slope(delta_p["Slope"], Pitch_MA, time_delta)
     delta_p["speed"] = init_speed(start_point, delta_p["speed"], Accx_MA, delta_p["Slope"], time_delta)
+    delta_p["heading"] = init_heading_by_accy(delta_p["heading"], Accy_MA, delta_p["speed"], time_delta)
     delta_p["height"] = init_height(start_point, delta_p["height"], delta_p["speed"], delta_p["Slope"], time_delta)
     delta_p["x"], delta_p["y"] = init_x_y(start_point, delta_p["x"], delta_p["y"], delta_p["speed"], delta_p["heading"], time_delta)
 
@@ -354,12 +368,14 @@ def visuallize(s, e, delta_p, ref_GPS = None):
         
         print(f"mileage) ref: {mileage_ref}, opt: {mileage_opt}, error: {(mileage_ref - mileage_opt)*100/mileage_ref} %")
         
+        rad = 0.3
+        circumference = 2 * math.pi * rad
         if ("AccelX" in ref_GPS.columns) :
-            DSNX_ref = np.sum(ref_GPS["AccelX"]**2) / mileage_ref
-            DSNX_opt = np.sum(ref_GPS["AccelX"]**2) / mileage_opt
+            DSNX_ref = np.sum((ref_GPS["AccelX"]- np.mean(ref_GPS["AccelX"]))**2) * circumference / mileage_ref
+            DSNX_opt = np.sum((ref_GPS["AccelX"] - np.mean(ref_GPS["AccelX"]))**2) * circumference / mileage_opt
             
-            DSNY_ref = np.sum(ref_GPS["AccelY"][1:]**2) / mileage_ref
-            DSNY_opt = np.sum(ref_GPS["AccelY"][1:]**2) / mileage_opt
+            DSNY_ref = np.sum(np.abs(ref_speed[1:][normal_idx]) * np.abs(np.tan(np.diff(ref_GPS["headMot"])[normal_idx]))/ 9.81) * circumference / mileage_ref
+            DSNY_opt = np.sum(np.abs(speed[normal_idx]) * np.abs(np.tan(delta_p["heading"][normal_idx]))/ 9.81) * circumference / mileage_opt
             
             print(f"DSNX) ref: {DSNX_ref}, opt: {DSNX_opt}, error: {(DSNX_ref - DSNX_opt)*100/DSNX_ref} %")
             print(f"DSNY) ref: {DSNY_ref}, opt: {DSNY_opt}, error: {(DSNY_ref - DSNY_opt)*100/DSNY_ref} %")
@@ -430,16 +446,8 @@ def visuallize(s, e, delta_p, ref_GPS = None):
     plt.show()
 
 
-data_ = result[0]
-data_ = acc_file[2530:2550].copy()
-s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True)
-ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True)
-
-path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e, alpha=4)
-
-visuallize(s, e, delta_s, data_[["lat", "lon", "headMot", "height", "Speed", "numSV", "AccelX", "AccelY"]])
-visuallize(s, e, delta_e_s, data_[["lat", "lon", "headMot", "height", "Speed","numSV", "AccelX", "AccelY"]])
-visuallize(s, e, delta_bi, data_[["lat", "lon", "headMot", "height", "Speed","numSV", "AccelX", "AccelY"]])
+# data_ = result[0]
+# data_ = acc_file[2530:2550].copy()
 
 import numpy as np
 
@@ -504,34 +512,93 @@ def local_path_to_geodetic(x, y, h, ref):
     x, y, h: 각각 N개의 점으로 구성된 배열 (예: np.array)
     반환: (lat, lon, h) 좌표 배열 (N x 3)
     """
-    ref_lat = ref["lat"]
-    ref_lon = ref["lon"]
-    ref_h = ref["h"]
+    ref_lat = ref["Lat"]
+    ref_lon = ref["Lon"]
+    ref_h = ref["Height"]
+    lat_list, lon_list, height_list = [], [], []
     
-    geodetic_points = []
     for xi, yi, hi in zip(x, y, h):
         # 여기서 x는 동쪽(East), y는 북쪽(North)으로 가정
         ecef = enu_to_ecef(xi, yi, hi, ref_lat, ref_lon, ref_h)
         lat, lon, alt = ecef_to_geodetic(ecef[0], ecef[1], ecef[2])
-        geodetic_points.append([lat, lon, alt])
+        lat_list.append(lat)
+        lon_list.append(lon)
+        height_list.append(alt)
     
-    return np.array(geodetic_points)
+    return np.array(lat_list), np.array(lon_list), np.array(height_list)
 
-# 예시 사용:
-if __name__ == '__main__':
-    # 기준점: 시작점의 geodetic 좌표 (예: 서울 시청)
-    ref = {"lat": 37.5665, "lon": 126.9780, "h": 0.0}
+def recover_visuallize(s, delta_bi, data=None, show= True):
+    lat_rec, lon_rec, h_rec = local_path_to_geodetic(np.cumsum(delta_bi["x"]), np.cumsum(delta_bi["y"]), np.cumsum(delta_bi["height"]), s)
+    recovered_df = pd.DataFrame(np.hstack([lat_rec.reshape(-1, 1), lon_rec.reshape(-1, 1), h_rec.reshape(-1, 1)]), columns=["lat", "lon", "height"])
     
-    # 예시 로컬 경로 (x, y, h) -- 단위: 미터
-    # 예를 들어, x는 동쪽, y는 북쪽, h는 고도 변화
-    N = 1
-    # 간단한 직선 경로 예: x는 0에서 100 m, y는 0에서 50 m, h는 0에서 10 m 변화
-    x = np.linspace(0, 100, N)
-    y = np.linspace(0, 50, N)
-    h = np.linspace(0, 10, N)
+    #display(recovered_df)
+    if show:
+        fig = go.Figure()
+        fig.add_trace(go.Scattermapbox(
+            lat=recovered_df['lat'],
+            lon=recovered_df['lon'],
+            mode='markers+lines',
+            marker=dict(size=5, color='orange'),
+            name='Recovered Path'
+        ))
+
+        if data is not None:
+            fig.add_trace(go.Scattermapbox(
+                lat=data['lat'],
+                lon=data['lon'],
+                mode='markers+lines',
+                marker=dict(size=5, color='brown'),
+                name='Original Path'
+            ))
+
+        fig.update_layout(
+            mapbox=dict(
+                style="open-street-map",
+                zoom=15,
+                center=dict(lat=recovered_df['lat'].iloc[0], lon=recovered_df['lon'].iloc[0])
+            ),
+            width=1200,
+            height=900,
+            margin=dict(l=0, r=0, t=0, b=0),
+            showlegend=True
+        )
+
+        fig.show()
     
-    geodetic_path = local_path_to_geodetic(x, y, h, ref)
-    
-    # 결과 출력: 각 점의 (lat, lon, h)
-    for pt in geodetic_path:
-        print("Lat: {:.6f}, Lon: {:.6f}, h: {:.2f}".format(pt[0], pt[1], pt[2]))
+    return recovered_df
+
+acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
+acc_file = calibration(acc_file)
+
+result = detection(acc_file.loc[30000:])
+# #
+
+#data_ = acc_file.loc[33900:34000].copy()
+
+# data_ = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\10.Road_Test\calib_driving_data\054-23RE110020KF\1\7435_20231117_000.csv")
+# data_["headMot"] = data_["heading"]
+# data_["Speed"] = data_["Speed"] / 3.6
+# data_["lat"] = data_["Lat"]
+# data_["lon"] = data_["Lng"]
+# data_["height"] = data_["Alt"]
+# data_["datetime"] = data_["Data"]
+# data_["numSV"] = 10
+
+# data_ = data_[30:80].copy()
+
+for data_ in result[5:]:
+    if isinstance(data_, str) and data_ == "parking":
+        print("section judged as parking")
+        continue
+
+    s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True, k = 1)
+    ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True, k = 1)
+
+    path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e, alpha=4)
+
+    visuallize(s, e, delta_s, data_[["lat", "lon", "headMot", "height", "Speed", "numSV", "AccelX", "AccelY"]])
+    visuallize(s, e, delta_e_s, data_[["lat", "lon", "headMot", "height", "Speed","numSV", "AccelX", "AccelY"]])
+    visuallize(s, e, delta_bi, data_[["lat", "lon", "headMot", "height", "Speed","numSV", "AccelX", "AccelY"]])
+
+    # recover_visuallize(s, delta_bi, data_)
+    # recover_visuallize(s, delta_s, data_)
