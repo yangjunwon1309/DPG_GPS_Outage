@@ -98,34 +98,62 @@ def bi_optimize(data, bi_inital = True):
 print(s[["Height", "Heading", "X", "Y", "Speed", "Slope"]])
 bi_optimize(data_, bi_inital=True)
 
+import warnings
+warnings.filterwarnings("ignore")
 
-acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\175\20240909.csv").drop(columns=["Unnamed: 0"])
+
+acc_file = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\102.GPS_outage\137\20240909.csv").drop(columns=["Unnamed: 0"])
 acc_file = calibration(acc_file)
 
 result = detection(acc_file.loc[:15000])
-# #
+# #[33835:33875]
 
-data_ = acc_file[2530:2550].copy()
-ref_cal = ["lat", "lon", "height", "headMot", "Speed", "numSV"]
+data_ = acc_file.loc[30300:30330].copy()
+ref_cal = ["lat", "lon", "height", "headMot", "Speed", "numSV", "AccelX", "AccelY"]
 
-for outage_file in [data_]:
-    #display(outage_file.describe(include="all"))
-    fig = px.scatter_mapbox(outage_file, lat = f'lat', lon= f'lon', color= f"height", zoom=15, mapbox_style='open-street-map', color_continuous_scale='turbo').update_traces(marker={'size':5})
-    fig.update_layout(
-        width = 1200,
-        height = 900,
-        margin = dict(l=0, r=0, t=0, b=0),
-    )
-    fig.show()
+# data_ = pd.read_csv(fr"Y:\99_Code_Library\YJW\6.data\10.Road_Test\calib_driving_data\054-23RE110020KF\1\7435_20231117_000.csv")
+
+# data_["headMot"] = data_["heading"]
+# data_["Speed"] = data_["Speed"] / 3.6
+# data_["lat"] = data_["Lat"]
+# data_["lon"] = data_["Lng"]
+# data_["height"] = data_["Alt"]
+# data_["datetime"] = data_["Data"]
+# data_["numSV"] = 10
+# #data_ = calibration(data_)
+
+
+# data_ = data_[680:700].copy()
+# geod = Geod(ellps="WGS84")
+# azimuth, _, distance = geod.inv(data_.iloc[0]["lon"], data_.iloc[0]["lat"], data_.iloc[1]["lon"], data_.iloc[1]["lat"])
+# data_["headMot"].iloc[0] = np.radians(azimuth)
+# azimuth, _, distance = geod.inv(data_.iloc[-2]["lon"], data_.iloc[-2]["lat"], data_.iloc[-1]["lon"], data_.iloc[-1]["lat"])
+# data_["headMot"].iloc[-1] = np.radians(azimuth)
+# print(np.radians(azimuth))
+
+# for outage_file in [data_]:
+#     #display(outage_file.describe(include="all"))
+#     fig = px.scatter_mapbox(outage_file, lat = f'lat', lon= f'lon', color= f"height", zoom=15, mapbox_style='open-street-map', color_continuous_scale='turbo', hover_data=["lat", "lon", "height", outage_file.index]).update_traces(marker={'size':5})
+#     fig.update_layout(
+#         width = 1200,
+#         height = 900,
+#         margin = dict(l=0, r=0, t=0, b=0),
+#     )
+#     fig.show()
     
-s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True)
-ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True)
+# 스마트링크 k = 80
+# 핸드폰 k = 1
+
+s, e, delta_s, time_delta_s = initialize(data_, linear_slope=True, k = 1)
+ss, ee, delta_e, time_delta_e = initialize(data_, reverse=True, linear_slope=True, k = 1)
 
 visuallize(s, e, delta_s, data_[ref_cal])
 
 path_bi, path_e_s, delta_bi, delta_e_s = bi_direction(s, e, delta_s, delta_e, alpha = 4)
+visuallize(s, e, delta_bi, data_[ref_cal])
+visuallize(s, e, delta_e_s, data_[ref_cal])
 
-optimizer_ = optimizer(s, e, delta_bi, max_iter=50)
-opt_result(s, e, optimizer_, data_[ref_cal])
+optimizer_ = optimizer(s, e, delta_bi, max_iter=500)
+opt_result(s, e, optimizer_, data_[ref_cal], show = False)
 optimizer_.optimize()
-opt_result(s, e, optimizer_, data_[ref_cal])
+opt_result(s, e, optimizer_, data_[ref_cal], show = True)
