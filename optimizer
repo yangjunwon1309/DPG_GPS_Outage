@@ -18,8 +18,8 @@ class optimizer():
         self.mu = 10 * np.ones(self.m)
         self.epsilon = epsilon
         self.max_iter = max_iter
-        self.weight = np.array([5*1e-2, 3, 10, 5, 5]) # heading, speed, height, X, Y
-        self.min_turn_R = 10
+        self.weight = np.array([3*1e-2, 10, 10, 3, 3]) # heading, speed, height, X, Y
+        self.min_turn_R = 25
         
         self.DV = np.vstack([delta["heading"].reshape(-1, 1), delta["Slope"].reshape(-1, 1), delta["speed"].reshape(-1, 1)]).flatten()
         self.org_slope = delta["Slope"].reshape(-1, 1).flatten()
@@ -43,8 +43,8 @@ class optimizer():
         M = np.block([
         [  Z,   I,   Z ],
         [ -Z,   I,   Z ],
-        [  R*I_s,   Z,  -L ],
-        [  R*I_s,  -Z,  -L ],
+        [  I_s,   Z,  -L/R ],
+        [  I_s,  -Z,  -L/R ],
         [  Z,   Z,   I_s ],
         [  Z,   Z,  -I_s ]
         ])
@@ -84,7 +84,7 @@ class optimizer():
         
         error_RH_norm = np.sqrt(error_heading**2 + (error_X)**2 + (error_Y)**2)
         
-        delta_thresh = 1
+        delta_thresh = 10
         gamma = 3
         
         if error_RH_norm > delta_thresh:
@@ -100,7 +100,7 @@ class optimizer():
         
         return total_cost
     
-    def constraint_cal(self, DV, R = 11, slope_ths = 0.1, acc_ths = 3):
+    def constraint_cal(self, DV, R = 50, slope_ths = 0.1, acc_ths = 3):
         """
         제약조건 식 계산하기, 6N x 1
         """
@@ -118,8 +118,8 @@ class optimizer():
         ])
         
         heading_cst = np.vstack([
-            np.insert((R * np.dot((heading - self.org_heading), self.time_delta) - Speed)[1:], 0, 0).flatten(),
-            np.insert((R * np.dot((-heading + self.org_heading), self.time_delta) - Speed)[1:], 0, 0).flatten()
+            np.insert((np.dot((heading - self.org_heading), self.time_delta) - Speed/R)[1:], 0, 0).flatten(),
+            np.insert((np.dot((-heading + self.org_heading), self.time_delta) - Speed/R)[1:], 0, 0).flatten()
         ])
         
         speed_cst = np.vstack([
@@ -307,7 +307,7 @@ class optimizer():
         return self.DV
     
     
-def opt_result(s, e, optimizer_, ref_GPS = None):
+def opt_result(s, e, optimizer_, ref_GPS = None, show = True):
 
     new_DV = optimizer_.DV
     heading = new_DV[:optimizer_.N]
@@ -330,5 +330,9 @@ def opt_result(s, e, optimizer_, ref_GPS = None):
     
     if ref_GPS is None:
         visuallize(s, e, delta_opt)
+        recover_df = recover_visuallize(s, delta_opt, show)
     else:
         visuallize(s, e, delta_opt, ref_GPS)
+        recover_df = recover_visuallize(s, delta_opt, ref_GPS, show)
+    
+    return recover_df
